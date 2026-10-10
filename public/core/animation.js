@@ -64,13 +64,14 @@ export function makeAnimations(bones, spec) {
     RightLowerArm: [-elbow, 0, 0],
   });
 
-  const gait = (A, K, armA, elbow, bob, lean) => (p) => {
+  const gait = (A, K, armA, elbow, bob, lean, sway) => (p) => {
     const s = Math.sin(p), c = Math.cos(p);
     const kneeL = K * Math.max(0, -c) + 0.08, kneeR = K * Math.max(0, c) + 0.08;
     const thighL = -A * s, thighR = A * s;
     return {
-      HipsT: [hips[0], hips[1] - bob * H * (0.5 + 0.5 * Math.cos(2 * p)), hips[2]],
-      Hips: [0, 6 * DEG * s, 0],
+      // Weight shifts over the stance leg (sway), and the pelvis drops on the swing side.
+      HipsT: [hips[0] - sway * H * c, hips[1] - bob * H * (0.5 + 0.5 * Math.cos(2 * p)), hips[2]],
+      Hips: [0, 6 * DEG * s, 3 * DEG * c],
       Spine: [lean, -4 * DEG * s, 0],
       Chest: [0, -5 * DEG * s, 0],
       Head: [-lean * 0.6, 3 * DEG * s, 0],
@@ -82,16 +83,25 @@ export function makeAnimations(bones, spec) {
   };
 
   return [
-    clip('Idle', 3, 30, (p) => ({
+    clip('idle', 3, 30, (p) => ({
       HipsT: [hips[0], hips[1] - 0.003 * H * (0.5 + 0.5 * Math.cos(p)), hips[2]],
       Spine: [1.5 * DEG * Math.sin(p), 0, 0],
       Chest: [2 * DEG * Math.sin(p), 0, 0],
       Head: [-1.5 * DEG * Math.sin(p + 0.6), 2 * DEG * Math.sin(p * 0.5), 0],
       ...arms(2 * DEG * Math.sin(p), 2 * DEG * Math.sin(p), 0.15 + 0.03 * Math.sin(p), 3 * DEG * (1 + Math.sin(p))),
     })),
-    clip('Walk', 1.1, 24, gait(28 * DEG, 50 * DEG, 24 * DEG, 0.3, 0.012, 3 * DEG)),
-    clip('Run', 0.7, 20, gait(45 * DEG, 95 * DEG, 50 * DEG, 1.4, 0.03, 12 * DEG)),
-    clip('Wave', 2, 30, (p) => ({
+    clip('walk', 1.1, 24, gait(28 * DEG, 50 * DEG, 24 * DEG, 0.3, 0.012, 3 * DEG, 0.012)),
+    clip('run', 0.7, 20, gait(45 * DEG, 95 * DEG, 50 * DEG, 1.4, 0.03, 12 * DEG, 0.008)),
+    // Seated on a bench: thighs horizontal, shins vertical, so the hips drop to
+    // knee height and the feet stay on the floor. Held pose (2 identical keys).
+    clip('sit', 1, 1, () => ({
+      HipsT: [hips[0], hips[1] - (spec.hipY - spec.kneeY), hips[2]],
+      Spine: [-4 * DEG, 0, 0],
+      LeftUpperLeg: [-90 * DEG, 0, 0], RightUpperLeg: [-90 * DEG, 0, 0],
+      LeftLowerLeg: [90 * DEG, 0, 0], RightLowerLeg: [90 * DEG, 0, 0],
+      ...arms(-25 * DEG, -25 * DEG, 0.9),
+    })),
+    clip('wave', 2, 30, (p) => ({
       ...arms(2 * DEG, 0, 0.15),
       // Raise the right arm overhead and wave the forearm.
       RightUpperArm: [-10 * DEG, 0, -(spec.arm.angle + 60 * DEG)],

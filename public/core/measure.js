@@ -14,7 +14,7 @@ const DEG = Math.PI / 180;
  * @param {{height?:number}} opts
  */
 export function measureBody(front, side, back, opts = {}) {
-  const H = opts.height ?? 1.8;
+  const H = opts.height ?? 1.7;
   const F = front;
   const Hp = F.heightPx;
   const mF = H / Hp; // metres per front pixel
@@ -119,7 +119,9 @@ export function measureBody(front, side, back, opts = {}) {
       while (b < Hp * 0.06 && F.on(px + uy * b, py - ux * b)) b++;
       return a + b;
     };
-    arms.push({ len, angle, upper: thick(0.28), fore: thick(0.62), hand: thick(0.9) });
+    // Colour along the arm axis (used to find where the sleeve ends).
+    const sample = (t) => F.sampleColor(sx + ux * len * t, sy + uy * len * t);
+    arms.push({ len, angle, upper: thick(0.28), fore: thick(0.62), hand: thick(0.9), sample });
   }
   const good = arms.filter(Boolean);
   if (good.length < 2) notes.push(good.length ? 'one arm not found - mirrored the other' : 'arms not found - using default A-pose');
@@ -220,50 +222,159 @@ export function measureBody(front, side, back, opts = {}) {
     torsoAt, headAt, legAtY,
   };
 
-  // Colour projection, used by the builder to paint each face.
-  spec.colorAt = makeColorSampler({ F, cx, mF, H, back, sideInfo, shoulderY });
-  return spec;
+  // Flat colours per body part + clothing boundaries, read off the photos.
+  spec.look = measureLook({ F, cx, mF, H, back, spec, neckV, shoulderV, crotchV, arms: good, shoulderHalf });
+  return applyPreset(spec, opts.preset);
 }
 
-function makeColorSampler({ F, cx, mF, H, back, sideInfo, shoulderY }) {
-  let bcx = 0, mB = 0;
-  if (back) {
-    let s = 0, k = 0;
-    for (let v = 0.01; v <= 0.07; v += 0.005) {
-      const r = back.runNear(back.rowAt(v), (back.bbox.x0 + back.bbox.x1) / 2);
-      if (r) { s += (r[0] + r[1]) / 2; k++; }
+// Average colour over a rectangle of masked pixels (image px). null if empty.
+function regionColor(S, x0, y0, x1, y1) {
+  const { data } = S.img;
+  let r = 0, g = 0, b = 0, n = 0;
+  for (let y = Math.max(0, Math.floor(y0)); y <= Math.min(S.h - 1, Math.ceil(y1)); y++)
+    for (let x = Math.max(0, Math.floor(x0)); x <= Math.min(S.w - 1, Math.ceil(x1)); x++) {
+      if (!S.mask[y * S.w + x]) continue;
+      const i = (y * S.w + x) * 4;
+      r += data[i]; g += data[i + 1]; b += data[i + 2]; n++;
     }
-    bcx = k ? s / k : (back.bbox.x0 + back.bbox.x1) / 2;
-    mB = H / back.heightPx;
-  }
-  const fromFront = (p) => F.sampleColor(cx + p[0] / mF, F.rowAt(1 - p[1] / H));
-  const fromBack = (p) => back ? back.sampleColor(bcx - p[0] / mB, back.rowAt(1 - p[1] / H)) : null; // back view is mirrored
-  const fromSide = (p) => {
-    if (!sideInfo) return null;
-    const { S, zc, sign, mS } = sideInfo;
-    return S.sampleColor(zc + sign * p[2] / mS, S.rowAt(1 - p[1] / H));
-  };
+  return n ? [r / n, g / n, b / n] : null;
+}
+const cdist = (a, b) => Math.sqrt((a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2 + (a[2] - b[2]) ** 2);
 
-  // p = face centre, nrm = face normal. Blend views by how directly they see the face.
-  // Below the shoulders the profile view is unreliable (the near arm hangs over the
-  // torso and legs), so side-facing faces there use the silhouette edge of the
-  // front/back views instead, which shows the body's true flank colour.
-  return (p, nrm) => {
-    const nx = Math.abs(nrm[0]);
-    const sideOk = p[1] > shoulderY;
-    const views = [
-      [Math.max(nrm[2], 0) + 0.05 + (sideOk ? 0 : nx * 0.5), fromFront],
-      [Math.max(-nrm[2], 0) + (sideOk ? 0 : nx * 0.5), fromBack],
-      [sideOk ? nx * 0.9 : 0, fromSide],
-    ];
-    let r = 0, g = 0, b = 0, wsum = 0;
-    for (const [w, fn] of views) {
-      if (w <= 0.01) continue;
-      const c = fn(p);
+/**
+ * One clean colour per part (Skin, Hair, Top, Bottom, Shoes) and where the
+ * clothes end: hem height, sleeve length, trouser length and hair coverage.
+ */
+function measureLook({ F, cx, mF, H, back, spec, neckV, shoulderV, crotchV, arms, shoulderHalf }) {
+  const Hp = F.heightPx;
+  const px = (v) => F.rowAt(v);
+  const headHalf = Math.max(4, (F.runNear(px(neckV * 0.5), cx) || [cx - 4, cx + 4]).reduce((a, b) => b - a) / 2);
+
+  // Head landmarks relative to the detected neck (head sizes vary a lot).
+  // Face: cheeks/mouth band in the lower half of the head. Hair: the crown.
+  const hv = (f) => px(neckV * f);
+  const skinFace = regionColor(F, cx - headHalf * 0.3, hv(0.62), cx + headHalf * 0.3, hv(0.8));
+  const hair = regionColor(F, cx - headHalf * 0.5, hv(0.02), cx + headHalf * 0.5, hv(0.15)) || skinFace || [80, 60, 40];
+  let skin = skinFace || [225, 180, 140];
+  const hands = []; // hand colours are a second skin sample
+  const top = regionColor(F, cx - shoulderHalf * 0.4, px(shoulderV + 0.05), cx + shoulderHalf * 0.4, px(shoulderV + 0.13)) || [120, 120, 130];
+  const legMid = F.runNear(px(crotchV + 0.12), cx + shoulderHalf * 0.45);
+  const bottom = (legMid && regionColor(F, legMid[0] + 2, px(crotchV + 0.08), legMid[1] - 2, px(crotchV + 0.2))) || [60, 70, 100];
+  const footRun = F.runNear(px(0.985), cx + shoulderHalf * 0.45);
+  const shoes = (footRun && regionColor(F, footRun[0], px(0.965), footRun[1], px(0.998))) || [40, 40, 45];
+
+  // Hem: scanning the torso centre line downwards, the biggest colour jump
+  // between chest and crotch is where the top ends. Default = hip.
+  let hemV = 1 - spec.hipY / H;
+  {
+    let best = 0, bestV = hemV;
+    const prev = [];
+    for (let v = shoulderV + 0.14; v <= crotchV + 0.02; v += 0.01) {
+      const c = regionColor(F, cx - shoulderHalf * 0.3, px(v), cx + shoulderHalf * 0.3, px(v + 0.01));
       if (!c) continue;
-      r += c[0] * w; g += c[1] * w; b += c[2] * w; wsum += w;
+      prev.push([v, c]);
+      if (prev.length > 3) {
+        const [v0, c0] = prev[prev.length - 4];
+        const d = cdist(c0, c);
+        if (d > best) { best = d; bestV = (v0 + v) / 2; }
+      }
     }
-    if (!wsum) { const c = fromFront(p); return c || [160, 160, 160]; }
-    return [r / wsum, g / wsum, b / wsum];
+    if (best > 45) hemV = bestV;
+    else hemV = Math.min(hemV, crotchV - 0.01);
+  }
+
+  // Sleeve length: walk along the arm; first point that looks like skin rather
+  // than the top colour. t in [0,1] along shoulder->wrist. Long sleeve = 1.
+  let sleeveT = 1;
+  for (const a of arms) {
+    let hit = null;
+    for (let t = 0.15; t <= 0.8; t += 0.05) {
+      const c = a.sample(t);
+      if (!c) continue;
+      const isSkin = cdist(c, skin) < cdist(c, top) - 15;
+      if (isSkin && hit == null) hit = t;
+      else if (!isSkin) hit = null; // must stay skin all the way to the wrist
+    }
+    if (hit != null) sleeveT = Math.min(sleeveT, clamp(hit, 0.05, 1));
+    const hc = a.sample(0.9);
+    if (hc && cdist(hc, skin) < 70) hands.push(hc);
+  }
+  if (hands.length) skin = skin.map((c, i) => (c + hands.reduce((s, h) => s + h[i], 0) / hands.length) / 2);
+
+  // Trouser length: walk down a leg from the crotch to the ankle.
+  let trouserT = 1;
+  {
+    let hit = null;
+    for (let t = 0.2; t <= 0.9; t += 0.05) {
+      const v = crotchV + (0.955 - crotchV) * t;
+      const r = F.runNear(px(v), cx + shoulderHalf * 0.45);
+      const c = r && regionColor(F, r[0] + 1, px(v), r[1] - 1, px(v + 0.01));
+      if (!c) continue;
+      const isSkin = cdist(c, skin) < cdist(c, bottom) - 15;
+      if (isSkin && hit == null) hit = t;
+      else if (!isSkin) hit = null;
+    }
+    if (hit != null) trouserT = clamp(hit, 0.1, 1);
+  }
+
+  // Hair coverage: for each head height, is the front of the head hair or
+  // skin? And does hair cover the back of the head / neck (long hair)?
+  const eyeV = neckV * 0.5;
+  const frontHair = (v) => {
+    const c = regionColor(F, cx - headHalf * 0.3, px(v), cx + headHalf * 0.3, px(v + 0.008));
+    return c ? cdist(c, hair) < cdist(c, skin) : false;
   };
+  let hairlineV = neckV * 0.2;
+  for (let v = neckV * 0.05; v <= eyeV; v += 0.004) { if (frontHair(v)) hairlineV = v + 0.005; else break; }
+  const backHair = (v) => {
+    if (back) {
+      const bcx = (back.bbox.x0 + back.bbox.x1) / 2;
+      const r = back.runNear(back.rowAt(v), bcx);
+      const c = r && regionColor(back, r[0], back.rowAt(v), r[1], back.rowAt(v + 0.01));
+      return c ? cdist(c, hair) < cdist(c, skin) && cdist(c, hair) < cdist(c, top) : false;
+    }
+    // Front view fallback: the silhouette edge columns of the head.
+    const r = F.runNear(px(v), cx);
+    if (!r) return false;
+    const c = regionColor(F, r[0], px(v), r[0] + Math.max(2, headHalf * 0.2), px(v + 0.008));
+    return c ? cdist(c, hair) < cdist(c, skin) : false;
+  };
+  let hairBackV = neckV * 0.6;
+  for (let v = neckV * 0.2; v <= Math.min(neckV + 0.08, 0.3); v += 0.01) { if (backHair(v)) hairBackV = v + 0.01; else break; }
+  const hasHair = cdist(hair, skin) > 28;
+
+  const color = (c) => c.map((x) => Math.round(clamp(x, 0, 255)));
+  return {
+    skin: color(skin), hair: color(hair), top: color(top), bottom: color(bottom), shoes: color(shoes),
+    hemY: H * (1 - hemV), sleeveT, trouserT,
+    hasHair, hairlineY: H * (1 - hairlineV), hairBackY: H * (1 - hairBackV),
+  };
+}
+
+/** Body-shape presets: multipliers over the measured proportions. */
+export const PRESETS = {
+  measured: {},
+  slim: { shoulder: 0.9, hip: 0.9, torso: 0.86, limb: 0.82, head: 1 },
+  average: { shoulder: 1, hip: 1, torso: 1, limb: 1, head: 1 },
+  broad: { shoulder: 1.18, hip: 1.08, torso: 1.2, limb: 1.25, head: 1.02 },
+  child: { shoulder: 0.85, hip: 0.9, torso: 0.95, limb: 0.95, head: 1.3, height: 1.2 },
+};
+
+function applyPreset(spec, name) {
+  const p = PRESETS[name] || {};
+  if (!Object.keys(p).length) return spec;
+  const shoulder = p.shoulder ?? 1, hip = p.hip ?? 1, torso = p.torso ?? 1, limb = p.limb ?? 1, head = p.head ?? 1;
+  const base = { torsoAt: spec.torsoAt, legAtY: spec.legAtY, headAt: spec.headAt, arm: spec.arm };
+  spec.shoulderX *= shoulder;
+  spec.hipX *= hip;
+  spec.torsoAt = (y) => { const t = base.torsoAt(y); const w = y > spec.chestY ? shoulder : y < spec.hipY ? hip : torso; const zm = (t.zf + t.zb) / 2, d = (t.zf - t.zb) / 2 * torso; return { hx: t.hx * w, zf: zm + d, zb: zm - d }; };
+  spec.legAtY = (y) => { const l = base.legAtY(y); const zm = (l.zf + l.zb) / 2, d = (l.zf - l.zb) / 2 * limb; return { off: l.off * hip, hx: l.hx * limb, zf: zm + d, zb: zm - d }; };
+  spec.arm = { ...base.arm, upper: base.arm.upper * limb, fore: base.arm.fore * limb, hand: base.arm.hand * Math.sqrt(limb) };
+  if (head !== 1) {
+    // Scale the head about the neck joint; the body keeps its proportions.
+    const H = spec.height;
+    spec.headAt = (y) => { const yy = spec.neckY + (y - spec.neckY) / head; const h = base.headAt(Math.min(yy, H)); return { hx: h.hx * head, zf: h.zf * head, zb: h.zb * head }; };
+    spec.headScale = head;
+  }
+  return spec;
 }

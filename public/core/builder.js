@@ -3,10 +3,11 @@
 // The body is a handful of lofted "tubes" (stacked elliptical rings): torso,
 // neck+head, two arms, two legs, two feet. Every ring knows which bone(s) it
 // belongs to, so skin weights are exact and cheap: one ring = one weight set,
-// blended across joints for smooth bending. Colours are projected from the
-// source photos onto each face and reduced to a small palette texture.
+// blended across joints for smooth bending. Every triangle belongs to one body
+// region material (Skin, Hair, Top, Bottom, Shoes) with one flat colour each,
+// so crowd tools can re-dress the character per person.
 
-import { encodePNG } from './png.js';
+export const MATERIALS = ['Skin', 'Hair', 'Top', 'Bottom', 'Shoes'];
 
 const DETAIL = {
   low: { torso: 8, head: 8, limb: 6, foot: 5 },
@@ -61,7 +62,7 @@ function weightsAlong(s, segs, blend) {
 }
 
 class MeshBuilder {
-  constructor() { this.tris = []; } // {p:[a,b,c], w:[wa,wb,wc]}
+  constructor() { this.tris = []; this.mat = () => 'Skin'; } // {p:[a,b,c], w:[wa,wb,wc], m}
 
   /**
    * rings: [{c, u, v, rx, ry, w}] ; S segments ; caps: apex points (or null).
@@ -102,7 +103,7 @@ class MeshBuilder {
     let out = sub(centroid, inside);
     if (isCap) out = sub(p[2], inside); // apex direction
     if (dot(n, out) < 0) { p = [p[0], p[2], p[1]]; w = [w[0], w[2], w[1]]; }
-    this.tris.push({ p, w });
+    this.tris.push({ p, w, m: this.mat(centroid, norm(cross(sub(p[1], p[0]), sub(p[2], p[0])))) });
   }
 }
 
@@ -116,13 +117,14 @@ function frame(d) {
 
 /**
  * @param spec body spec from measureBody
- * @param {{detail?:'low'|'medium'|'high', colors?:number}} opts
+ * @param {{detail?:'low'|'medium'|'high'}} opts
  */
 export function buildCharacter(spec, opts = {}) {
   const D = DETAIL[opts.detail ?? 'medium'];
   const H = spec.height;
   const mb = new MeshBuilder();
   const zmid = (y) => { const t = spec.torsoAt(y); return (t.zf + t.zb) / 2; };
+  const look = spec.look;
 
   // ---------- skeleton (world positions, identity bind rotations) ----------
   const pos = {};
@@ -161,6 +163,7 @@ export function buildCharacter(spec, opts = {}) {
       const w = weightsAlong(y, [['Hips', spec.waistY - 0.02 * H], ['Spine', spec.chestY], ['Chest', shoulderTopY], ['Neck', Infinity]], 0.035 * H);
       rings.push({ c: [0, y, (t.zf + t.zb) / 2], u: [1, 0, 0], v: [0, 0, 1], rx: t.hx, ry: (t.zf - t.zb) / 2, w });
     }
+    mb.mat = (c) => (c[1] > look.hemY ? 'Top' : 'Bottom');
     mb.tube(rings, D.torso, add(rings[0].c, [0, -0.02 * H, 0]), add(rings[N].c, [0, 0.005 * H, 0]));
   }
 
@@ -180,6 +183,13 @@ export function buildCharacter(spec, opts = {}) {
       rings.push({ c: [0, y, cz], u: [1, 0, 0], v: [0, 0, 1], rx: Math.max(h.hx, 0.01 * H), ry: Math.max(ry, 0.01 * H), w });
     }
     const top = rings[rings.length - 1];
+    // Hair: above the hairline on the face, lower down on the sides and back.
+    const sideHairY = lerp(look.hairlineY, look.hairBackY, 0.5);
+    mb.mat = (c, n) => {
+      if (c[1] < spec.neckY || !look.hasHair) return 'Skin';
+      const lim = n[2] > 0.35 ? look.hairlineY : n[2] > -0.2 ? sideHairY : look.hairBackY;
+      return c[1] > lim ? 'Hair' : 'Skin';
+    };
     mb.tube(rings, D.head, null, [top.c[0], headTop, top.c[2]]);
   }
 
@@ -198,6 +208,8 @@ export function buildCharacter(spec, opts = {}) {
       const isHand = t > 0.82;
       return { c: add(sh, mul(dir, L * t)), u, v, rx: r, ry: isHand ? r * 0.45 : r * 0.92, w: weightsAlong(t, segs, 0.05) };
     });
+    const sleeveEnd = Math.min(look.sleeveT, 1) * 0.8; // 0.8 = wrist
+    mb.mat = (c) => (dot(sub(c, sh), dir) / L < sleeveEnd ? 'Top' : 'Skin');
     mb.tube(rings, D.limb, add(sh, mul(dir, -L * 0.1)), add(sh, mul(dir, L)));
   }
 
@@ -216,6 +228,8 @@ export function buildCharacter(spec, opts = {}) {
       const w = weightsAlong(-y, [['Hips', -spec.hipY], [side + 'UpperLeg', -spec.kneeY], [side + 'LowerLeg', -spec.ankleY], [side + 'Foot', Infinity]], 0.03 * H);
       rings.push({ c: [tx, y, (l.zf + l.zb) / 2], u: [1, 0, 0], v: [0, 0, 1], rx: l.hx, ry: (l.zf - l.zb) / 2, w });
     }
+    const trouserEndY = look.trouserT >= 1 ? -Infinity : lerp(spec.crotchY, 0.045 * H, look.trouserT);
+    mb.mat = (c) => (c[1] > trouserEndY ? 'Bottom' : 'Skin');
     mb.tube(rings, D.limb, null, add(rings[N].c, [0, -0.01 * H, 0]));
 
     // Foot: a tapered box-like tube running heel -> toe along +Z.
@@ -232,77 +246,38 @@ export function buildCharacter(spec, opts = {}) {
         w: weightsAlong(z, [[side + 'Foot', ballZ], [side + 'Toes', Infinity]], 0.015 * H),
       };
     });
+    mb.mat = () => 'Shoes';
     mb.tube(frings, D.foot, add(frings[0].c, [0, 0, -0.01 * H]), add(frings[frings.length - 1].c, [0, 0, 0.012 * H]));
   }
 
-  // ---------- colour each face from the photos, then reduce to a palette ----------
-  const faceColors = mb.tris.map(({ p }) => {
-    const c = mul(add(add(p[0], p[1]), p[2]), 1 / 3);
-    const n = norm(cross(sub(p[1], p[0]), sub(p[2], p[0])));
-    return spec.colorAt(c, n);
-  });
-  const K = Math.max(2, Math.min(64, opts.colors ?? 16));
-  const { palette, assign } = kmeans(faceColors, K);
-  const grid = palette.length <= 4 ? 2 : palette.length <= 16 ? 4 : 8;
-  const cell = 4, size = grid * cell;
-  const px = new Uint8Array(size * size * 4);
-  for (let y = 0; y < size; y++) for (let x = 0; x < size; x++) {
-    const idx = Math.floor(y / cell) * grid + Math.floor(x / cell);
-    const c = palette[idx] ?? [0, 0, 0];
-    const o = (y * size + x) * 4;
-    px[o] = c[0]; px[o + 1] = c[1]; px[o + 2] = c[2]; px[o + 3] = 255;
-  }
-  const png = encodePNG(size, size, px);
-
-  // ---------- flatten to vertex streams ----------
-  const T = mb.tris.length;
-  const position = new Float32Array(T * 9), normal = new Float32Array(T * 9), uv = new Float32Array(T * 6);
+  // ---------- flatten to vertex streams, grouped by material ----------
+  const order = MATERIALS.flatMap((m) => mb.tris.filter((t) => t.m === m));
+  const T = order.length;
+  const position = new Float32Array(T * 9), normal = new Float32Array(T * 9);
   const joints = new Uint8Array(T * 12), weights = new Float32Array(T * 12);
-  mb.tris.forEach(({ p, w }, f) => {
+  order.forEach(({ p, w }, f) => {
     const n = norm(cross(sub(p[1], p[0]), sub(p[2], p[0])));
-    const ci = assign[f];
-    const u0 = ((ci % grid) + 0.5) / grid, v0 = (Math.floor(ci / grid) + 0.5) / grid;
     for (let k = 0; k < 3; k++) {
       const vi = f * 3 + k;
-      position.set(p[k], vi * 3); normal.set(n, vi * 3); uv.set([u0, v0], vi * 2);
+      position.set(p[k], vi * 3); normal.set(n, vi * 3);
       const ents = Object.entries(w[k]).filter(([, x]) => x > 1e-4).sort((a, b) => b[1] - a[1]).slice(0, 4);
       const sum = ents.reduce((a, [, x]) => a + x, 0);
       ents.forEach(([b, x], j) => { joints[vi * 4 + j] = BI[b]; weights[vi * 4 + j] = x / sum; });
     }
   });
+  // One group (= one glTF primitive) per material that is actually used.
+  const groups = [];
+  let start = 0;
+  for (const m of MATERIALS) {
+    const count = mb.tris.filter((t) => t.m === m).length;
+    if (count) groups.push({ material: m, color: look[m.toLowerCase()], start, count });
+    start += count;
+  }
 
   const bones = BONES.map((name) => ({ name, parent: PARENT[name] ? BI[PARENT[name]] : -1, pos: pos[name] }));
   return {
     bones,
-    mesh: { position, normal, uv, joints, weights, triangles: T },
-    texture: { png, size, palette },
+    mesh: { position, normal, joints, weights, triangles: T, groups },
     spec,
   };
-}
-
-/** Deterministic k-means (farthest-point init) on RGB colours. */
-function kmeans(colors, K) {
-  const n = colors.length;
-  const centers = [colors.reduce((a, c) => add(a, c), [0, 0, 0]).map((x) => x / n)];
-  const d2 = (a, b) => (a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2 + (a[2] - b[2]) ** 2;
-  const minD = colors.map((c) => d2(c, centers[0]));
-  while (centers.length < K) {
-    let bi = 0;
-    for (let i = 1; i < n; i++) if (minD[i] > minD[bi]) bi = i;
-    if (minD[bi] < 4) break; // fewer distinct colours than K
-    centers.push(colors[bi].slice());
-    for (let i = 0; i < n; i++) minD[i] = Math.min(minD[i], d2(colors[i], colors[bi]));
-  }
-  const assign = new Int32Array(n);
-  for (let it = 0; it < 10; it++) {
-    for (let i = 0; i < n; i++) {
-      let best = 0, bd = Infinity;
-      for (let k = 0; k < centers.length; k++) { const d = d2(colors[i], centers[k]); if (d < bd) { bd = d; best = k; } }
-      assign[i] = best;
-    }
-    const acc = centers.map(() => [0, 0, 0, 0]);
-    for (let i = 0; i < n; i++) { const a = acc[assign[i]]; a[0] += colors[i][0]; a[1] += colors[i][1]; a[2] += colors[i][2]; a[3]++; }
-    acc.forEach((a, k) => { if (a[3]) centers[k] = [a[0] / a[3], a[1] / a[3], a[2] / a[3]]; });
-  }
-  return { palette: centers.map((c) => c.map((x) => Math.round(Math.min(255, Math.max(0, x))))), assign };
 }

@@ -1,5 +1,6 @@
 // Headless self-test: generates the demo character in Node, then checks the GLB
-// with the official Khronos glTF validator plus our own skinning sanity checks.
+// with the official Khronos glTF validator, our skinning sanity checks, and the
+// crowd bake-tool contract (flat named materials, no textures, required clips).
 import { writeFileSync, mkdirSync } from 'node:fs';
 import validator from 'gltf-validator';
 import { sampleImages } from '../public/core/samples.js';
@@ -8,11 +9,17 @@ import { generateCharacter } from '../public/core/pipeline.js';
 let failed = 0;
 const check = (ok, msg) => { console.log(`${ok ? 'PASS' : 'FAIL'}  ${msg}`); if (!ok) failed++; };
 
+function readGLBJson(bytes) {
+  const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const len = dv.getUint32(12, true);
+  return JSON.parse(new TextDecoder().decode(bytes.subarray(20, 20 + len)));
+}
+
 const imgs = sampleImages();
 for (const detail of ['low', 'medium', 'high']) {
-  const res = generateCharacter(imgs, { detail, colors: 16 });
+  const res = generateCharacter(imgs, { detail });
   const s = res.stats;
-  console.log(`\n[${detail}] ${s.triangles} tris, ${s.bones} bones, ${s.colors} colours, ${s.clips.join('/')}, ${(s.bytes / 1024).toFixed(1)} KB, ${s.ms} ms`);
+  console.log(`\n[${detail}] ${s.triangles} tris, ${s.bones} bones, materials ${s.materials.join('/')}, clips ${s.clips.join('/')}, ${(s.bytes / 1024).toFixed(1)} KB, ${s.ms} ms`);
   if (s.notes.length) console.log('  notes:', s.notes.join('; '));
 
   const report = await validator.validateBytes(res.glb);
@@ -20,6 +27,19 @@ for (const detail of ['low', 'medium', 'high']) {
   check(numErrors === 0, `Khronos validator: ${numErrors} errors, ${numWarnings} warnings`);
   if (numErrors || numWarnings) for (const m of report.issues.messages.slice(0, 10)) console.log('   ', m.severity, m.code, m.message, m.pointer ?? '');
 
+  // --- crowd bake-tool contract
+  const g = readGLBJson(res.glb);
+  check(!g.images && !g.textures && !g.samplers, 'no images / textures in the file');
+  const matNames = g.materials.map((m) => m.name);
+  check(['Skin', 'Hair', 'Top', 'Bottom', 'Shoes'].every((n) => matNames.includes(n)), `materials named Skin/Hair/Top/Bottom/Shoes (got ${matNames.join(',')})`);
+  check(g.materials.every((m) => m.pbrMetallicRoughness?.baseColorFactor?.length === 4 && !m.pbrMetallicRoughness.baseColorTexture), 'every material is a flat baseColorFactor');
+  check(g.meshes.length === 1 && g.skins.length === 1 && g.nodes.filter((n) => n.mesh != null).length === 1, 'exactly one skinned mesh + one skin');
+  check(g.meshes[0].primitives.length === matNames.length && g.meshes[0].primitives.every((p) => !p.targets), 'one primitive per material, no morph targets');
+  const clips = (g.animations || []).map((a) => a.name.toLowerCase());
+  check(clips.includes('walk') && clips.includes('idle'), `required clips walk + idle (got ${clips.join(',')})`);
+  check(['run', 'wave', 'sit'].every((c) => clips.includes(c)), 'optional clips run, wave, sit present');
+
+  // --- skinning + scale
   const { joints, weights, position } = res.character.mesh;
   let badW = 0, badJ = 0;
   for (let v = 0; v < weights.length / 4; v++) {
@@ -29,9 +49,13 @@ for (const detail of ['low', 'medium', 'high']) {
   }
   check(badW === 0, 'all vertex weights sum to 1');
   check(badJ === 0, 'all joint indices valid');
-  let minY = Infinity, maxY = -Infinity;
-  for (let i = 1; i < position.length; i += 3) { minY = Math.min(minY, position[i]); maxY = Math.max(maxY, position[i]); }
-  check(Math.abs(minY) < 0.02 && Math.abs(maxY - 1.8) < 0.05, `feet on ground and height ~1.8 m (y ${minY.toFixed(3)}..${maxY.toFixed(3)})`);
+  let minY = Infinity, maxY = -Infinity, minZ = Infinity, maxZ = -Infinity;
+  for (let i = 0; i < position.length; i += 3) {
+    minY = Math.min(minY, position[i + 1]); maxY = Math.max(maxY, position[i + 1]);
+    minZ = Math.min(minZ, position[i + 2]); maxZ = Math.max(maxZ, position[i + 2]);
+  }
+  check(Math.abs(minY) < 0.02 && Math.abs(maxY - 1.7) < 0.05, `feet on ground and height ~1.7 m (y ${minY.toFixed(3)}..${maxY.toFixed(3)})`);
+  check(maxZ > -minZ, 'faces +Z (toes stick out further forward than the heels/back)');
   check(s.triangles < 6000, 'low-poly budget (< 6k tris)');
 
   if (detail === 'medium') {

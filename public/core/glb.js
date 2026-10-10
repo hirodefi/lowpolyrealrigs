@@ -1,5 +1,6 @@
 // Hand-written glTF 2.0 binary (GLB) exporter for the generated character:
-// one skinned mesh, one skeleton, an embedded palette PNG and N animation clips.
+// one skinned mesh (one primitive per body-region material, flat colours, no
+// textures), one skeleton and N animation clips.
 
 const FLOAT = 5126, UBYTE = 5121;
 const ARRAY_BUFFER = 34962;
@@ -11,7 +12,7 @@ const ARRAY_BUFFER = 34962;
  * @returns {Uint8Array} GLB bytes
  */
 export function exportGLB(character, animations = [], opts = {}) {
-  const { bones, mesh, texture } = character;
+  const { bones, mesh } = character;
   const name = opts.name || 'Character';
   const parts = []; // binary chunks
   let byteLength = 0;
@@ -42,14 +43,27 @@ export function exportGLB(character, animations = [], opts = {}) {
     return accessors.length - 1;
   };
 
-  const vcount = mesh.triangles * 3;
-  const attributes = {
-    POSITION: addAccessor(mesh.position, FLOAT, 'VEC3', vcount, { target: ARRAY_BUFFER, minmax: true }),
-    NORMAL: addAccessor(mesh.normal, FLOAT, 'VEC3', vcount, { target: ARRAY_BUFFER }),
-    TEXCOORD_0: addAccessor(mesh.uv, FLOAT, 'VEC2', vcount, { target: ARRAY_BUFFER }),
-    JOINTS_0: addAccessor(mesh.joints, UBYTE, 'VEC4', vcount, { target: ARRAY_BUFFER }),
-    WEIGHTS_0: addAccessor(mesh.weights, FLOAT, 'VEC4', vcount, { target: ARRAY_BUFFER }),
-  };
+  // One primitive per material, each with its own slice of the vertex streams.
+  const primitives = mesh.groups.map((g, mi) => {
+    const v0 = g.start * 3, vc = g.count * 3;
+    const slice = (arr, n) => arr.subarray(v0 * n, (v0 + vc) * n);
+    return {
+      attributes: {
+        POSITION: addAccessor(slice(mesh.position, 3), FLOAT, 'VEC3', vc, { target: ARRAY_BUFFER, minmax: true }),
+        NORMAL: addAccessor(slice(mesh.normal, 3), FLOAT, 'VEC3', vc, { target: ARRAY_BUFFER }),
+        JOINTS_0: addAccessor(slice(mesh.joints, 4), UBYTE, 'VEC4', vc, { target: ARRAY_BUFFER }),
+        WEIGHTS_0: addAccessor(slice(mesh.weights, 4), FLOAT, 'VEC4', vc, { target: ARRAY_BUFFER }),
+      },
+      material: mi,
+      mode: 4,
+    };
+  });
+  // glTF base colours are linear; the sampled photo colours are sRGB.
+  const toLinear = (c) => { c /= 255; return c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4; };
+  const materials = mesh.groups.map((g) => ({
+    name: g.material,
+    pbrMetallicRoughness: { baseColorFactor: [...g.color.map((c) => Math.round(toLinear(c) * 1e4) / 1e4), 1], metallicFactor: 0, roughnessFactor: 0.9 },
+  }));
 
   // Nodes: 0..B-1 = joints (same order as bones), B = skinned mesh node.
   const B = bones.length;
@@ -70,8 +84,6 @@ export function exportGLB(character, animations = [], opts = {}) {
   });
   const ibmAcc = addAccessor(ibm, FLOAT, 'MAT4', B);
 
-  const imageView = addView(texture.png);
-
   const gltfAnimations = animations.map((clip) => {
     const samplers = [], channels = [];
     for (const ch of clip.channels) {
@@ -90,15 +102,9 @@ export function exportGLB(character, animations = [], opts = {}) {
     scene: 0,
     scenes: [{ name, nodes: [rootJoint, B] }],
     nodes,
-    meshes: [{ name, primitives: [{ attributes, material: 0, mode: 4 }] }],
+    meshes: [{ name, primitives }],
     skins: [{ name: 'Armature', joints: bones.map((_, i) => i), skeleton: rootJoint, inverseBindMatrices: ibmAcc }],
-    materials: [{
-      name: 'Palette',
-      pbrMetallicRoughness: { baseColorTexture: { index: 0 }, metallicFactor: 0, roughnessFactor: 1 },
-    }],
-    textures: [{ sampler: 0, source: 0 }],
-    samplers: [{ magFilter: 9728, minFilter: 9728, wrapS: 33071, wrapT: 33071 }], // NEAREST + CLAMP: crisp palette
-    images: [{ name: 'palette', mimeType: 'image/png', bufferView: imageView }],
+    materials,
     accessors,
     bufferViews,
     buffers: [{ byteLength: 0 }],

@@ -29,11 +29,13 @@
 
       <h2>2. Settings</h2>
       <div class="settings">
-        <label>Height (m) <input id="height" type="number" value="1.8" min="0.3" max="5" step="0.05" /></label>
+        <label>Height (m) <input id="height" type="number" value="1.7" min="0.3" max="5" step="0.05" /></label>
         <label>Detail
           <select id="detail"><option value="low">Low (~0.9k tris)</option><option value="medium" selected>Medium (~1.2k tris)</option><option value="high">High (~1.5k tris)</option></select>
         </label>
-        <label>Colours <input id="colors" type="number" value="16" min="2" max="64" /></label>
+        <label>Body shape
+          <select id="preset"><option value="measured" selected>As measured</option><option value="slim">Slim</option><option value="average">Average</option><option value="broad">Broad</option><option value="child">Child</option></select>
+        </label>
         <label class="toggle"><input type="checkbox" id="anims" checked /> Include animations</label>
       </div>
       <button id="generate" disabled>Generate character</button>

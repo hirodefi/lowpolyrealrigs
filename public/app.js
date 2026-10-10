@@ -79,16 +79,16 @@ $('#generate').addEventListener('click', async () => {
     status('Generating...');
     await new Promise((r) => setTimeout(r, 20)); // let the status paint
     const res = generateCharacter(images, {
-      height: Number($('#height').value) || 1.8,
+      height: Number($('#height').value) || 1.7,
       detail: $('#detail').value,
-      colors: Number($('#colors').value) || 16,
+      preset: $('#preset').value,
       animations: $('#anims').checked,
     });
     lastGLB = res.glb;
     await showModel(res.glb);
     const s = res.stats;
     $('#stats').innerHTML = [
-      ['Triangles', s.triangles], ['Bones', s.bones], ['Colours', s.colors],
+      ['Triangles', s.triangles], ['Bones', s.bones], ['Materials', s.materials.join(', ')],
       ['Clips', s.clips.length ? s.clips.join(', ') : 'none'], ['File size', `${(s.bytes / 1024).toFixed(1)} KB`], ['Time', `${s.ms} ms`],
     ].map(([k, v]) => `<div><dt>${k}</dt><dd>${v}</dd></div>`).join('');
     status(`Done.${s.notes.length ? '\nNotes: ' + s.notes.join('; ') : ''}`);
@@ -152,10 +152,10 @@ async function showModel(glb) {
   const sel = $('#clip');
   sel.innerHTML = '<option value="">Bind pose</option>' + clips.map((c, i) => `<option value="${i}">${c.name}</option>`).join('');
   sel.disabled = !clips.length;
-  const walk = clips.findIndex((c) => c.name === 'Walk');
+  const walk = clips.findIndex((c) => c.name === 'walk');
   sel.value = walk >= 0 ? String(walk) : '';
   playClip();
-  const h = new THREE.Box3().setFromObject(model).getSize(new THREE.Vector3()).y || 1.8;
+  const h = new THREE.Box3().setFromObject(model).getSize(new THREE.Vector3()).y || 1.7;
   controls.target.set(0, h * 0.5, 0);
   camera.position.set(h * 1.2, h * 0.8, h * 2);
 }

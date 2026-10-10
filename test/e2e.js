@@ -34,7 +34,7 @@ try {
   await page.waitForTimeout(300);
   await page.screenshot({ path: 'out/ui_bind_pose.png' });
   await page.check('#bones');
-  await page.selectOption('#clip', { label: 'Walk' });
+  await page.selectOption('#clip', { label: 'walk' });
   await page.waitForTimeout(700);
   await page.screenshot({ path: 'out/ui_walk.png' });
   const bytes = await page.evaluate(() => window.__app.glb.byteLength);
