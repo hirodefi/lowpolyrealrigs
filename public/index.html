@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Low-Poly Rig Generator</title>
+  <link rel="stylesheet" href="style.css" />
+  <script type="importmap">
+    { "imports": { "three": "/vendor/three/build/three.module.js", "three/addons/": "/vendor/three/examples/jsm/" } }
+  </script>
+</head>
+<body>
+  <header>
+    <h1>Low-Poly Rig Generator</h1>
+    <p>Front, side and back images in, rigged and animated low-poly <code>.glb</code> out. Runs entirely in your browser.</p>
+  </header>
+
+  <main>
+    <section class="panel inputs">
+      <h2>1. Reference images</h2>
+      <p class="hint">Full body, one person, plain background (or transparent PNG), arms slightly away from the body. Side and back views are optional but improve depth and colours.</p>
+      <div class="slots">
+        <label class="slot" data-view="front"><span>Front <b>*</b></span><input type="file" accept="image/*" hidden /><canvas></canvas><em>Drop or click</em></label>
+        <label class="slot" data-view="side"><span>Side</span><input type="file" accept="image/*" hidden /><canvas></canvas><em>Drop or click</em></label>
+        <label class="slot" data-view="back"><span>Back</span><input type="file" accept="image/*" hidden /><canvas></canvas><em>Drop or click</em></label>
+      </div>
+      <label class="toggle"><input type="checkbox" id="showMask" /> Show detected silhouette</label>
+      <button id="sample" class="secondary">Load demo character</button>
+
+      <h2>2. Settings</h2>
+      <div class="settings">
+        <label>Height (m) <input id="height" type="number" value="1.8" min="0.3" max="5" step="0.05" /></label>
+        <label>Detail
+          <select id="detail"><option value="low">Low (~0.9k tris)</option><option value="medium" selected>Medium (~1.2k tris)</option><option value="high">High (~1.5k tris)</option></select>
+        </label>
+        <label>Colours <input id="colors" type="number" value="16" min="2" max="64" /></label>
+        <label class="toggle"><input type="checkbox" id="anims" checked /> Include animations</label>
+      </div>
+      <button id="generate" disabled>Generate character</button>
+      <div id="status" role="status"></div>
+    </section>
+
+    <section class="panel viewer">
+      <h2>3. Preview &amp; export</h2>
+      <div id="view"><div class="empty">Your character will appear here</div></div>
+      <div class="controls">
+        <label>Animation <select id="clip" disabled><option value="">Bind pose</option></select></label>
+        <label class="toggle"><input type="checkbox" id="bones" /> Skeleton</label>
+        <label class="toggle"><input type="checkbox" id="wire" /> Wireframe</label>
+        <button id="download" disabled>Download .glb</button>
+      </div>
+      <dl id="stats"></dl>
+    </section>
+  </main>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>

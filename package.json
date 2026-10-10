@@ -1,0 +1,17 @@
+{
+  "name": "lowpolyrigmodelgen",
+  "version": "1.0.0",
+  "description": "Upload front / side / back images of a character and get a rigged, animated low-poly GLB. Runs fully offline - no external APIs.",
+  "type": "module",
+  "scripts": {
+    "start": "node server.js",
+    "test": "node test/selftest.js",
+    "test:e2e": "node test/e2e.js"
+  },
+  "dependencies": {
+    "three": "0.169.0"
+  },
+  "devDependencies": {
+    "gltf-validator": "^2.0.0-dev.3.10"
+  }
+}
