@@ -73,6 +73,16 @@ for (const body of ['male', 'female', 'child']) {
   check(report.issues.numErrors === 0 && res.stats.body === body, `${body} template: valid GLB, ${res.stats.triangles} tris`);
 }
 
+// Hair and clothing styles all build valid files.
+for (const [hair, bottom] of [['long', 'skirt'], ['bob', 'trousers'], ['ponytail', 'shorts'], ['bald', 'skirt']]) {
+  const res = generateCharacter(imgs, { body: 'female', hair, bottom });
+  const report = await validator.validateBytes(res.glb);
+  let badW = 0;
+  const w = res.character.mesh.weights;
+  for (let v = 0; v < w.length / 4; v++) if (Math.abs(w[v * 4] + w[v * 4 + 1] + w[v * 4 + 2] + w[v * 4 + 3] - 1) > 1e-4) badW++;
+  check(report.issues.numErrors === 0 && badW === 0 && res.stats.hair === hair, `hair ${hair} + ${bottom}: valid GLB, weights ok, ${res.stats.triangles} tris`);
+}
+
 // Front-only input must still work (side/back optional).
 const solo = generateCharacter({ front: imgs.front }, {});
 check(solo.glb.byteLength > 0, 'front-only input works');

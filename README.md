@@ -4,7 +4,8 @@ Upload **front / side / back** images of a person and get a **rigged, animated, 
 that drops straight into Three.js, Blender, Godot, Unity (glTFast), Unreal, Babylon and others.
 
 - **No external APIs, no AI models, no GPU.** Everything is classic geometry that runs in the browser in ~50–100 ms.
-- **Human-shaped:** the body follows an averaged human template (sloped shoulders, chest/waist/hip curve, neck, skull with nose and ears, hair shell, mitten hands, heel-to-toe shoes, clothing hems and cuffs), sized and coloured from your photos.
+- **Human-shaped:** the body follows an averaged human template (sloped shoulders, chest/waist/hip curve, neck, skull with nose and ears, mitten hands with a thumb, heel-to-toe shoes), sized and coloured from your photos. Men and women differ in shoulders, bust, waist and hips.
+- **Hair and clothes:** short, bob, long (down the back) or ponytail hair; trousers, shorts or a skirt/dress that follows the legs; shirt collar, sleeve cuffs and hems. All auto-detected from the photos, or chosen by hand.
 - **Crowd-ready export:** one skinned mesh, a 21-bone humanoid skeleton, flat colour materials named `Skin`, `Hair`, `Top`, `Bottom`, `Shoes` (one primitive each, no textures, so a crowd can re-dress each person), and clips `idle`, `walk`, `run`, `sit`, `wave`.
 - **Grounded motion:** walk and run follow human gait curves; the feet never sink into or float above the floor, and each locomotion clip stores its ground speed in `extras.speed` (m/s), so the character can be moved at the matching speed without foot sliding.
 - **Validated output:** every GLB passes the official Khronos glTF validator with 0 errors and 0 warnings.
@@ -20,7 +21,10 @@ Click **Load demo character** to try it without any images, or drop your own ima
 (only the front view is required). **Compare to photo** overlays the front photo on a front view of the model,
 so you can see where the measurement went wrong.
 
-Ready-made files for a quick bake test are in `examples/` (the demo character as `male`, `female` and `child`).
+Ready-made files for a quick bake test are in `examples/`: the demo character as a man with short hair, a woman with
+long hair and a skirt, a woman with a ponytail and trousers, a woman with a bob and a skirt, and a child.
+
+Triangle budget (demo character): Low ~2,050–2,200, Medium ~2,550–2,700, High ~3,500–3,750.
 
 ## Tests
 
@@ -38,9 +42,9 @@ images ─► silhouette ─► measurements ─► template body ─► skeleto
 | Step | File | What it does |
 |---|---|---|
 | Silhouette | `public/core/silhouette.js` | Background removal: alpha if present, otherwise a smooth lighting model fitted to the image border and flood-filled in from the edges (copes with studio gradients and floor/wall shadows). Keeps the largest blob and extracts per-row spans. |
-| Measure | `public/core/measure.js` | Detects the neck, shoulders, crotch, arm direction and thickness, and depth/facing from the side view. Samples one clean colour per region (face, hair, top, trousers, shoes) and finds the hem, sleeve and trouser length and the hairline. |
+| Measure | `public/core/measure.js` | Detects the neck, shoulders, crotch, arm direction and thickness, and depth/facing from the side view. Samples one clean colour per region (face, hair, top, trousers, shoes) and finds the hem, sleeve and trouser length, the hairline, hair length (down the back or beside the neck) and skirts (the leg gap opening far below the hips, or no gap at all). |
 | Template | `public/core/template.js` | Averaged body proportions and cross-section shapes for men, women and children (see below). |
-| Build | `public/core/builder.js` | Places 21 joints from the template's landmarks, then lofts torso, neck and head, arms, legs and feet from template rings, scaled ring by ring to the photo's measured widths and depths. Adds a nose, ears, a hair shell and clothing lips. Each ring knows its bone(s), so skin weights are exact and blend smoothly across joints, with extra rings at the elbows and knees. |
+| Build | `public/core/builder.js` | Places 21 joints from the template's landmarks, then lofts torso, neck and head, arms, legs and feet from template rings, scaled ring by ring to the photo's measured widths and depths (within human limits). Adds a nose, ears, thumbs, a collar, clothing lips, the hair style and a skirt when needed. Each ring knows its bone(s), so skin weights are exact and blend smoothly across joints; skirt vertices follow both thighs so legs never cut through. |
 | Animate | `public/core/animation.js` | `walk` and `run` from keyframed gait curves (hip, knee, ankle, toe, pelvis turn/tilt/sway, torso twist, arm swing), with forward kinematics keeping the feet on the floor. Also a breathing `idle`, a held `sit` and a `wave`. |
 | Export | `public/core/glb.js` | Hand-written glTF 2.0 binary writer. No dependencies. |
 
@@ -65,8 +69,8 @@ node tools/extract-template.mjs path/to/reference.glb   # regenerate public/core
 `UpperLeg > LowerLeg > Foot > Toes`. These names auto-map to Unity's Humanoid avatar and are easy to retarget in Blender
 and other engines. The model faces +Z, Y is up, the units are metres (1.7 m tall by default) and the feet stand on y = 0.
 
-**Body type** picks the template (auto-detected from the photo's proportions, or man / woman / child), and
-**Build** (slim, average, broad) scales the measured widths.
+**Body type** picks the template (auto-detected from the photo's proportions, or man / woman / child),
+**Build** (slim, average, broad) scales the measured widths, and **Hair** / **Clothes** override the detected styles.
 
 ## Tips for the best results
 
@@ -78,5 +82,5 @@ and other engines. The model faces +Z, Y is up, the units are metres (1.7 m tall
 ## Limits
 
 The result is a low-poly figure built from measured proportions and colours, not a photogrammetry scan.
-Fingers, facial features beyond the nose and ears, and loose clothing (capes, wide skirts, long hair below the neck)
-are simplified away. Three-quarter or mid-stride photos work but read the width less accurately than a straight front view.
+Separate fingers, facial features beyond the nose and ears, jackets/lapels/ties (the five-material format has no
+accent colour), heels and very loose clothing (capes, ball gowns) are simplified away. Three-quarter or mid-stride photos work but read the width less accurately than a straight front view.

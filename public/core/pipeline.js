@@ -18,7 +18,7 @@ export function generateCharacter(images, opts = {}) {
     back: images.back ? analyzeImage(images.back) : null,
   };
   const spec = measureBody(sil.front, sil.side, sil.back, { height: opts.height ?? 1.7 });
-  const character = buildCharacter(spec, { detail: opts.detail, body: opts.body, preset: opts.preset });
+  const character = buildCharacter(spec, { detail: opts.detail, body: opts.body, preset: opts.preset, hair: opts.hair, bottom: opts.bottom });
   const animations = opts.animations === false ? [] : makeAnimations(character);
   const glb = exportGLB(character, animations, { name: opts.name });
   return {
@@ -30,6 +30,8 @@ export function generateCharacter(images, opts = {}) {
       triangles: character.mesh.triangles,
       bones: character.bones.length,
       body: character.bodyType,
+      hair: character.hairStyle,
+      bottom: character.bottomStyle,
       materials: character.mesh.groups.map((g) => g.material),
       clips: animations.map((a) => a.name),
       bytes: glb.byteLength,
