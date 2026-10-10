@@ -8,7 +8,7 @@ import { sampleImages } from './core/samples.js';
 const MAX_PX = 400; // analysis resolution - plenty for silhouettes, keeps everything ~instant
 const $ = (s) => document.querySelector(s);
 const images = { front: null, side: null, back: null };
-let lastGLB = null;
+let lastGLB = null, lastFront = null;
 
 // ---------- image slots ----------
 for (const slot of document.querySelectorAll('.slot')) {
@@ -81,14 +81,19 @@ $('#generate').addEventListener('click', async () => {
     const res = generateCharacter(images, {
       height: Number($('#height').value) || 1.7,
       detail: $('#detail').value,
+      body: $('#body').value,
       preset: $('#preset').value,
       animations: $('#anims').checked,
     });
     lastGLB = res.glb;
+    lastFront = res.silhouettes.front;
+    $('#compare').checked = false;
+    $('#compare').disabled = false;
     await showModel(res.glb);
+    setCompare(false);
     const s = res.stats;
     $('#stats').innerHTML = [
-      ['Triangles', s.triangles], ['Bones', s.bones], ['Materials', s.materials.join(', ')],
+      ['Body', s.body], ['Triangles', s.triangles], ['Bones', s.bones], ['Materials', s.materials.join(', ')],
       ['Clips', s.clips.length ? s.clips.join(', ') : 'none'], ['File size', `${(s.bytes / 1024).toFixed(1)} KB`], ['Time', `${s.ms} ms`],
     ].map(([k, v]) => `<div><dt>${k}</dt><dd>${v}</dd></div>`).join('');
     status(`Done.${s.notes.length ? '\nNotes: ' + s.notes.join('; ') : ''}`);
@@ -140,7 +145,7 @@ async function showModel(glb) {
   const gltf = await new GLTFLoader().parseAsync(glb.buffer.slice(glb.byteOffset, glb.byteOffset + glb.byteLength), '');
   if (model) scene.remove(model);
   if (helper) scene.remove(helper);
-  if (!host.contains(renderer.domElement)) { host.innerHTML = ''; host.appendChild(renderer.domElement); resize(); }
+  if (!host.contains(renderer.domElement)) { host.querySelector('.empty')?.remove(); host.prepend(renderer.domElement); resize(); }
   model = gltf.scene;
   scene.add(model);
   helper = new THREE.SkeletonHelper(model);
@@ -164,8 +169,41 @@ function playClip() {
   if (!mixer) return;
   mixer.stopAllAction();
   const i = $('#clip').value;
-  if (i !== '') mixer.clipAction(clips[Number(i)]).play();
+  if (i !== '' && !$('#compare').checked) mixer.clipAction(clips[Number(i)]).play();
 }
+
+// ---------- compare to photo: front camera + the source photo overlaid ----------
+const overlay = $('#overlay');
+const FIT = 1.15; // the model fills 1/FIT of the view height in compare mode
+function setCompare(on) {
+  overlay.hidden = !on;
+  controls.enabled = !on;
+  playClip();
+  if (!on || !model || !lastFront) return;
+  const h = new THREE.Box3().setFromObject(model).getSize(new THREE.Vector3()).y || 1.7;
+  const d = (h * FIT / 2) / Math.tan((camera.fov * Math.PI) / 360);
+  controls.target.set(0, h / 2, 0);
+  camera.position.set(0, h / 2, d);
+  camera.lookAt(0, h / 2, 0);
+  drawOverlay();
+}
+function drawOverlay() {
+  if (overlay.hidden || !lastFront) return;
+  const { clientWidth: W, clientHeight: H } = host;
+  overlay.width = W; overlay.height = H;
+  const S = lastFront, { x0, x1, y0, y1 } = S.bbox;
+  // Head centre column = the body's vertical axis in the photo.
+  const r = S.runNear(S.rowAt(0.04), (x0 + x1) / 2) || [x0, x1];
+  const cx = (r[0] + r[1]) / 2;
+  const k = (H / FIT) / (y1 - y0 + 1);
+  const src = document.createElement('canvas');
+  src.width = S.w; src.height = S.h;
+  src.getContext('2d').putImageData(new ImageData(new Uint8ClampedArray(S.img.data), S.w, S.h), 0, 0);
+  const ctx = overlay.getContext('2d');
+  ctx.clearRect(0, 0, W, H);
+  ctx.drawImage(src, W / 2 - cx * k, (H - (y1 - y0 + 1) * k) / 2 - y0 * k, S.w * k, S.h * k);
+}
+$('#compare').addEventListener('change', () => setCompare($('#compare').checked));
 function applyWire() {
   model?.traverse((o) => { if (o.isMesh) o.material.wireframe = $('#wire').checked; });
 }
@@ -177,6 +215,7 @@ function resize() {
   const { clientWidth: w, clientHeight: h } = host;
   renderer.setSize(w, h, false);
   camera.aspect = w / h;
+  drawOverlay();
   camera.updateProjectionMatrix();
 }
 new ResizeObserver(resize).observe(host);

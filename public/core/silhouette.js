@@ -10,18 +10,13 @@ export function analyzeImage(img) {
   const mask = new Uint8Array(w * h);
 
   // 1. Foreground detection: use alpha when the image has real transparency,
-  //    otherwise compare against the background colour sampled from the border.
+  //    otherwise model the background and flood it in from the border.
   let transparent = 0;
   for (let i = 3; i < data.length; i += 4) if (data[i] < 128) transparent++;
   if (transparent > w * h * 0.05) {
     for (let i = 0; i < w * h; i++) mask[i] = data[i * 4 + 3] >= 128 ? 1 : 0;
   } else {
-    const bg = borderColor(img);
-    const thr = 42 * 42;
-    for (let i = 0; i < w * h; i++) {
-      const dr = data[i * 4] - bg[0], dg = data[i * 4 + 1] - bg[1], db = data[i * 4 + 2] - bg[2];
-      mask[i] = dr * dr + dg * dg + db * db > thr ? 1 : 0;
-    }
+    floodBackground(img, mask);
   }
 
   // 2. Keep only the largest connected blob (drops noise, shadows, logos).
@@ -50,13 +45,93 @@ export function analyzeImage(img) {
   return new Silhouette(img, mask, { x0, x1, y0, y1 }, runs);
 }
 
-function borderColor({ width: w, height: h, data }) {
-  const rs = [], gs = [], bs = [];
-  const push = (x, y) => { const i = (y * w + x) * 4; rs.push(data[i]); gs.push(data[i + 1]); bs.push(data[i + 2]); };
-  for (let x = 0; x < w; x += 2) { push(x, 0); push(x, h - 1); }
-  for (let y = 0; y < h; y += 2) { push(0, y); push(w - 1, y); }
-  const med = (a) => a.sort((p, q) => p - q)[a.length >> 1];
-  return [med(rs), med(gs), med(bs)];
+/**
+ * Background = pixels connected to the image border whose colour stays close
+ * to a smooth lighting model fitted to the border (a quadratic surface per
+ * channel). This copes with studio gradients and vignettes, where a single
+ * background colour fails. Everything not flooded is the subject (mask = 1).
+ */
+function floodBackground({ width: w, height: h, data }, mask) {
+  // Border samples (normalised coordinates).
+  const pts = [];
+  const push = (x, y) => { const i = (y * w + x) * 4; pts.push([x / w, y / h, data[i], data[i + 1], data[i + 2]]); };
+  for (let x = 0; x < w; x += 2) { push(x, 0); push(x, 1); push(x, h - 1); push(x, h - 2); }
+  for (let y = 0; y < h; y += 2) { push(0, y); push(1, y); push(w - 1, y); push(w - 2, y); }
+
+  // Robust least-squares fit: c = a0 + a1 x + a2 y + a3 x^2 + a4 y^2 + a5 xy.
+  const basis = (x, y) => [1, x, y, x * x, y * y, x * y];
+  let use = pts.map(() => true);
+  let coef = [[0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0]];
+  const model = (x, y, c) => basis(x, y).reduce((a, b, k) => a + b * coef[c][k], 0);
+  for (let pass = 0; pass < 3; pass++) {
+    for (let c = 0; c < 3; c++) {
+      const M = Array.from({ length: 6 }, () => new Array(7).fill(0));
+      pts.forEach((p, i) => {
+        if (!use[i]) return;
+        const b = basis(p[0], p[1]);
+        for (let r = 0; r < 6; r++) { for (let q = 0; q < 6; q++) M[r][q] += b[r] * b[q]; M[r][6] += b[r] * p[2 + c]; }
+      });
+      for (let r = 0; r < 6; r++) M[r][r] += 1e-6; // keep it well conditioned
+      coef[c] = solve(M);
+    }
+    // Drop outliers (subject touching the border, logos) and refit.
+    const res = pts.map((p) => Math.hypot(p[2] - model(p[0], p[1], 0), p[3] - model(p[0], p[1], 1), p[4] - model(p[0], p[1], 2)));
+    const med = res.slice().sort((a, b) => a - b)[res.length >> 1];
+    use = res.map((r) => r <= Math.max(6, med * 3));
+  }
+  const res = pts.map((p) => Math.hypot(p[2] - model(p[0], p[1], 0), p[3] - model(p[0], p[1], 1), p[4] - model(p[0], p[1], 2)));
+  const noise = res.slice().sort((a, b) => a - b)[res.length >> 1];
+  const thr = Math.max(28, Math.min(60, noise * 6 + 18));
+
+  // Distance of every pixel from the background model.
+  const dist = new Float32Array(w * h);
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const i = y * w + x, nx = x / w, ny = y / h;
+      const m = [0, 1, 2].map((c) => coef[c][0] + coef[c][1] * nx + coef[c][2] * ny + coef[c][3] * nx * nx + coef[c][4] * ny * ny + coef[c][5] * nx * ny);
+      const r = data[i * 4], g = data[i * 4 + 1], b = data[i * 4 + 2];
+      dist[i] = Math.hypot(r - m[0], g - m[1], b - m[2]);
+      // Floor shadows: darker than the background but with the same tint. Only
+      // below the head zone, so dark hair against a pale backdrop is safe.
+      if (y > h * 0.3) {
+        const sum = r + g + b + 1, ms = m[0] + m[1] + m[2] + 1, k = sum / ms;
+        const chroma = Math.abs(r / sum - m[0] / ms) + Math.abs(g / sum - m[1] / ms) + Math.abs(b / sum - m[2] / ms);
+        if (k > 0.3 && k < 1 && chroma < 0.04) dist[i] = Math.min(dist[i], chroma * 500);
+      }
+    }
+  }
+
+  // Flood from the border through background-like pixels.
+  const bg = new Uint8Array(w * h);
+  const stack = new Int32Array(w * h);
+  let sp = 0;
+  const seed = (i) => { if (!bg[i] && dist[i] < thr) { bg[i] = 1; stack[sp++] = i; } };
+  for (let x = 0; x < w; x++) { seed(x); seed((h - 1) * w + x); }
+  for (let y = 0; y < h; y++) { seed(y * w); seed(y * w + w - 1); }
+  while (sp) {
+    const p = stack[--sp], x = p % w, y = (p / w) | 0;
+    if (x > 0) seed(p - 1);
+    if (x < w - 1) seed(p + 1);
+    if (y > 0) seed(p - w);
+    if (y < h - 1) seed(p + w);
+  }
+  for (let i = 0; i < w * h; i++) mask[i] = bg[i] ? 0 : 1;
+}
+
+/** Gaussian elimination on an augmented n x (n+1) matrix. */
+function solve(M) {
+  const n = M.length;
+  for (let c = 0; c < n; c++) {
+    let piv = c;
+    for (let r = c + 1; r < n; r++) if (Math.abs(M[r][c]) > Math.abs(M[piv][c])) piv = r;
+    [M[c], M[piv]] = [M[piv], M[c]];
+    for (let r = 0; r < n; r++) {
+      if (r === c || !M[c][c]) continue;
+      const f = M[r][c] / M[c][c];
+      for (let k = c; k <= n; k++) M[r][k] -= f * M[c][k];
+    }
+  }
+  return M.map((row, i) => (row[i] ? row[n] / row[i] : 0));
 }
 
 function keepLargestComponent(mask, w, h) {

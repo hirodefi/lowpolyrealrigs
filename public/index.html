@@ -31,10 +31,13 @@
       <div class="settings">
         <label>Height (m) <input id="height" type="number" value="1.7" min="0.3" max="5" step="0.05" /></label>
         <label>Detail
-          <select id="detail"><option value="low">Low (~0.9k tris)</option><option value="medium" selected>Medium (~1.2k tris)</option><option value="high">High (~1.5k tris)</option></select>
+          <select id="detail"><option value="low">Low (~2k tris)</option><option value="medium" selected>Medium (~2.5k tris)</option><option value="high">High (~3.3k tris)</option></select>
         </label>
-        <label>Body shape
-          <select id="preset"><option value="measured" selected>As measured</option><option value="slim">Slim</option><option value="average">Average</option><option value="broad">Broad</option><option value="child">Child</option></select>
+        <label>Body type
+          <select id="body"><option value="auto" selected>Auto (from photo)</option><option value="male">Man</option><option value="female">Woman</option><option value="child">Child</option></select>
+        </label>
+        <label>Build
+          <select id="preset"><option value="measured" selected>As measured</option><option value="slim">Slim</option><option value="average">Average</option><option value="broad">Broad</option></select>
         </label>
         <label class="toggle"><input type="checkbox" id="anims" checked /> Include animations</label>
       </div>
@@ -44,11 +47,12 @@
 
     <section class="panel viewer">
       <h2>3. Preview &amp; export</h2>
-      <div id="view"><div class="empty">Your character will appear here</div></div>
+      <div id="view"><div class="empty">Your character will appear here</div><canvas id="overlay" hidden></canvas></div>
       <div class="controls">
         <label>Animation <select id="clip" disabled><option value="">Bind pose</option></select></label>
         <label class="toggle"><input type="checkbox" id="bones" /> Skeleton</label>
         <label class="toggle"><input type="checkbox" id="wire" /> Wireframe</label>
+        <label class="toggle"><input type="checkbox" id="compare" disabled /> Compare to photo</label>
         <button id="download" disabled>Download .glb</button>
       </div>
       <dl id="stats"></dl>

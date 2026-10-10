@@ -38,6 +38,8 @@ for (const detail of ['low', 'medium', 'high']) {
   const clips = (g.animations || []).map((a) => a.name.toLowerCase());
   check(clips.includes('walk') && clips.includes('idle'), `required clips walk + idle (got ${clips.join(',')})`);
   check(['run', 'wave', 'sit'].every((c) => clips.includes(c)), 'optional clips run, wave, sit present');
+  const walk = g.animations.find((a) => a.name === 'walk');
+  check(walk.extras?.speed > 0.6 && walk.extras.speed < 1.8, `walk has a realistic ground speed in extras (${walk.extras?.speed} m/s)`);
 
   // --- skinning + scale
   const { joints, weights, position } = res.character.mesh;
@@ -62,6 +64,13 @@ for (const detail of ['low', 'medium', 'high']) {
     mkdirSync(new URL('../out', import.meta.url), { recursive: true });
     writeFileSync(new URL('../out/demo_character.glb', import.meta.url), res.glb);
   }
+}
+
+// Every body template builds a valid file.
+for (const body of ['male', 'female', 'child']) {
+  const res = generateCharacter(imgs, { body });
+  const report = await validator.validateBytes(res.glb);
+  check(report.issues.numErrors === 0 && res.stats.body === body, `${body} template: valid GLB, ${res.stats.triangles} tris`);
 }
 
 // Front-only input must still work (side/back optional).

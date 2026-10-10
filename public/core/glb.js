@@ -94,7 +94,9 @@ export function exportGLB(character, animations = [], opts = {}) {
       samplers.push({ input, output, interpolation: 'LINEAR' });
       channels.push({ sampler: samplers.length - 1, target: { node: ch.node, path: ch.path } });
     }
-    return { name: clip.name, samplers, channels };
+    const anim = { name: clip.name, samplers, channels };
+    if (clip.extras && Object.keys(clip.extras).length) anim.extras = clip.extras;
+    return anim;
   });
 
   const json = {

@@ -19,6 +19,7 @@ export function measureBody(front, side, back, opts = {}) {
   const Hp = F.heightPx;
   const mF = H / Hp; // metres per front pixel
   const notes = [];
+  const detected = { neck: true, crotch: true, arms: 0 };
 
   // Head centre column = vertical axis of the body in the front view.
   let cx = 0, n = 0;
@@ -36,7 +37,7 @@ export function measureBody(front, side, back, opts = {}) {
   for (let v = 0.02; v <= 0.12; v += 0.004) { const w = centralHalf(v); if (w > headMaxW) { headMaxW = w; headMaxV = v; } }
   let neckV = 0.14, neckW = Infinity;
   for (let v = headMaxV; v <= 0.24; v += 0.004) { const w = centralHalf(v); if (w < neckW) { neckW = w; neckV = v; } }
-  if (neckW > headMaxW * 0.9) { neckV = 0.14; neckW = headMaxW * 0.6; notes.push('neck not visible - using proportions'); }
+  if (neckW > headMaxW * 0.9) { neckV = 0.14; neckW = headMaxW * 0.6; notes.push('neck not visible - using proportions'); detected.neck = false; }
   neckV = clamp(neckV, 0.1, 0.2);
 
   // --- Shoulders: first row where the body gets much wider than the neck.
@@ -52,7 +53,7 @@ export function measureBody(front, side, back, opts = {}) {
     let v = 0.88;
     while (v > 0.38 && gapAt(v - 0.003)) v -= 0.003;
     crotchV = v;
-  } else notes.push('no gap between legs (dress/robe?) - using proportions');
+  } else { notes.push('no gap between legs (dress/robe?) - using proportions'); detected.crotch = false; }
   crotchV = clamp(crotchV, 0.42, 0.62);
 
   // --- Pose: T-pose arms make the shoulder row extremely wide.
@@ -124,6 +125,7 @@ export function measureBody(front, side, back, opts = {}) {
     arms.push({ len, angle, upper: thick(0.28), fore: thick(0.62), hand: thick(0.9), sample });
   }
   const good = arms.filter(Boolean);
+  detected.arms = good.length;
   if (good.length < 2) notes.push(good.length ? 'one arm not found - mirrored the other' : 'arms not found - using default A-pose');
   const avg = (k, def) => good.length ? good.reduce((a, b) => a + b[k], 0) / good.length : def;
   const arm = {
@@ -206,6 +208,7 @@ export function measureBody(front, side, back, opts = {}) {
     height: H,
     tpose,
     notes,
+    detected,
     neckY: Y(neckV),
     shoulderY,
     chestY: shoulderY - (shoulderY - crotchY) * 0.28,
@@ -224,7 +227,7 @@ export function measureBody(front, side, back, opts = {}) {
 
   // Flat colours per body part + clothing boundaries, read off the photos.
   spec.look = measureLook({ F, cx, mF, H, back, spec, neckV, shoulderV, crotchV, arms: good, shoulderHalf });
-  return applyPreset(spec, opts.preset);
+  return spec;
 }
 
 // Average colour over a rectangle of masked pixels (image px). null if empty.
@@ -349,32 +352,4 @@ function measureLook({ F, cx, mF, H, back, spec, neckV, shoulderV, crotchV, arms
     hemY: H * (1 - hemV), sleeveT, trouserT,
     hasHair, hairlineY: H * (1 - hairlineV), hairBackY: H * (1 - hairBackV),
   };
-}
-
-/** Body-shape presets: multipliers over the measured proportions. */
-export const PRESETS = {
-  measured: {},
-  slim: { shoulder: 0.9, hip: 0.9, torso: 0.86, limb: 0.82, head: 1 },
-  average: { shoulder: 1, hip: 1, torso: 1, limb: 1, head: 1 },
-  broad: { shoulder: 1.18, hip: 1.08, torso: 1.2, limb: 1.25, head: 1.02 },
-  child: { shoulder: 0.85, hip: 0.9, torso: 0.95, limb: 0.95, head: 1.3, height: 1.2 },
-};
-
-function applyPreset(spec, name) {
-  const p = PRESETS[name] || {};
-  if (!Object.keys(p).length) return spec;
-  const shoulder = p.shoulder ?? 1, hip = p.hip ?? 1, torso = p.torso ?? 1, limb = p.limb ?? 1, head = p.head ?? 1;
-  const base = { torsoAt: spec.torsoAt, legAtY: spec.legAtY, headAt: spec.headAt, arm: spec.arm };
-  spec.shoulderX *= shoulder;
-  spec.hipX *= hip;
-  spec.torsoAt = (y) => { const t = base.torsoAt(y); const w = y > spec.chestY ? shoulder : y < spec.hipY ? hip : torso; const zm = (t.zf + t.zb) / 2, d = (t.zf - t.zb) / 2 * torso; return { hx: t.hx * w, zf: zm + d, zb: zm - d }; };
-  spec.legAtY = (y) => { const l = base.legAtY(y); const zm = (l.zf + l.zb) / 2, d = (l.zf - l.zb) / 2 * limb; return { off: l.off * hip, hx: l.hx * limb, zf: zm + d, zb: zm - d }; };
-  spec.arm = { ...base.arm, upper: base.arm.upper * limb, fore: base.arm.fore * limb, hand: base.arm.hand * Math.sqrt(limb) };
-  if (head !== 1) {
-    // Scale the head about the neck joint; the body keeps its proportions.
-    const H = spec.height;
-    spec.headAt = (y) => { const yy = spec.neckY + (y - spec.neckY) / head; const h = base.headAt(Math.min(yy, H)); return { hx: h.hx * head, zf: h.zf * head, zb: h.zb * head }; };
-    spec.headScale = head;
-  }
-  return spec;
 }

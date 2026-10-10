@@ -7,7 +7,7 @@ import { exportGLB } from './glb.js';
 
 /**
  * @param {{front:ImageLike, side?:ImageLike|null, back?:ImageLike|null}} images RGBA {width,height,data}
- * @param {{height?:number, preset?:string, detail?:'low'|'medium'|'high', animations?:boolean, name?:string}} opts
+ * @param {{height?:number, body?:'auto'|'male'|'female'|'child', preset?:string, detail?:'low'|'medium'|'high', animations?:boolean, name?:string}} opts
  */
 export function generateCharacter(images, opts = {}) {
   const t0 = now();
@@ -17,9 +17,9 @@ export function generateCharacter(images, opts = {}) {
     side: images.side ? analyzeImage(images.side) : null,
     back: images.back ? analyzeImage(images.back) : null,
   };
-  const spec = measureBody(sil.front, sil.side, sil.back, { height: opts.height ?? 1.7, preset: opts.preset });
-  const character = buildCharacter(spec, { detail: opts.detail });
-  const animations = opts.animations === false ? [] : makeAnimations(character.bones, spec);
+  const spec = measureBody(sil.front, sil.side, sil.back, { height: opts.height ?? 1.7 });
+  const character = buildCharacter(spec, { detail: opts.detail, body: opts.body, preset: opts.preset });
+  const animations = opts.animations === false ? [] : makeAnimations(character);
   const glb = exportGLB(character, animations, { name: opts.name });
   return {
     glb,
@@ -29,6 +29,7 @@ export function generateCharacter(images, opts = {}) {
     stats: {
       triangles: character.mesh.triangles,
       bones: character.bones.length,
+      body: character.bodyType,
       materials: character.mesh.groups.map((g) => g.material),
       clips: animations.map((a) => a.name),
       bytes: glb.byteLength,

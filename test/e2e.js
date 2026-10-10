@@ -37,6 +37,9 @@ try {
   await page.selectOption('#clip', { label: 'walk' });
   await page.waitForTimeout(700);
   await page.screenshot({ path: 'out/ui_walk.png' });
+  await page.check('#compare');
+  await page.waitForTimeout(300);
+  await page.screenshot({ path: 'out/ui_compare.png' });
   const bytes = await page.evaluate(() => window.__app.glb.byteLength);
   console.log('glb bytes:', bytes);
   if (errors.length) { console.log('page errors:', errors); code = 1; }
