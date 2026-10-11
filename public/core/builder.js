@@ -10,7 +10,9 @@
 
 import { TEMPLATE, BINS } from './template.js';
 
-export const MATERIALS = ['Skin', 'Hair', 'Top', 'Bottom', 'Shoes'];
+// Skin/Hair/Top/Bottom/Shoes are recoloured per person by the crowd; Accent
+// (collar, tie) and Eyes keep their colour.
+export const MATERIALS = ['Skin', 'Hair', 'Top', 'Bottom', 'Shoes', 'Accent', 'Eyes'];
 
 /** Body-shape presets: multipliers over the measured widths. */
 export const PRESETS = {
@@ -173,10 +175,13 @@ function pickHairStyle(opt, look, H, pos, shoulderY) {
 /** Pick a template body type from the photo proportions. */
 export function pickBodyType(spec) {
   // Calibrated on the ground-truth benchmark: head height (neck at > 17% of the
-  // height from the top) marks a child; a waist much narrower than the hips or
+  // height from the top) marks a child, unless the figure is clearly female; a waist much narrower than the hips or
   // a pronounced bust in profile marks a woman.
+  // A clearly female figure (narrow waist AND a bust) is never a child: hair
+  // hanging over the neck (a bob) can push the measured neck down.
   const sh = spec.shape || {};
-  if (sh.head != null && sh.head > 0.17) return 'child';
+  const clearlyFemale = sh.waistHip != null && sh.waistHip < 0.72 && sh.bust != null && sh.bust > 1.1;
+  if (sh.head != null && sh.head > 0.17 && !clearlyFemale) return 'child';
   if (sh.waistHip != null && sh.waistHip < 0.78) return 'female';
   if (sh.bust != null && sh.bust > 1.1) return 'female';
   return 'male';
@@ -187,6 +192,32 @@ export function pickBodyType(spec) {
  * @param {{detail?:'low'|'medium'|'high', body?:'auto'|'male'|'female'|'child', preset?:string}} opts
  */
 export function buildCharacter(spec, opts = {}) {
+  // Photo measurements are fractions of the whole figure (hair and soles
+  // included), while the build maps the template's skull top to H and then
+  // rescales the finished model to exactly H. Build once to learn that ratio,
+  // then again with the measurements expressed in build space, so a detected
+  // neck or hem lands where the photo shows it.
+  const first = buildOnce(spec, opts);
+  const r = first.rawHeight / spec.height;
+  if (Math.abs(r - 1) < 0.002) return first;
+  return { ...buildOnce(scaleSpec(spec, r), opts), spec };
+}
+
+/** The body spec with every length scaled by r (angles and fractions unchanged). */
+function scaleSpec(spec, r) {
+  const len = (o) => Object.fromEntries(Object.entries(o).map(([k, v]) => [k, typeof v === 'number' ? v * r : v]));
+  const y = (v) => (v == null ? v : v * r);
+  const L = spec.look;
+  return {
+    ...spec,
+    neckY: spec.neckY * r, shoulderY: spec.shoulderY * r, crotchY: spec.crotchY * r, shoulderX: spec.shoulderX * r, hipX: spec.hipX * r,
+    arm: { ...spec.arm, length: spec.arm.length * r, upper: spec.arm.upper * r, fore: spec.arm.fore * r, hand: spec.arm.hand * r },
+    torsoAt: (v) => len(spec.torsoAt(v / r)), headAt: (v) => len(spec.headAt(v / r)), legAtY: (v) => len(spec.legAtY(v / r)),
+    look: { ...L, hemY: y(L.hemY), skirtY: y(L.skirtY), necklineY: y(L.necklineY), hairlineY: y(L.hairlineY), hairBackY: y(L.hairBackY), hairEndY: y(L.hairEndY) },
+  };
+}
+
+function buildOnce(spec, opts) {
   const D = DETAIL[opts.detail ?? 'medium'];
   const H = spec.height;
   const bodyType = !opts.body || opts.body === 'auto' ? pickBodyType(spec) : opts.body;
@@ -196,9 +227,34 @@ export function buildCharacter(spec, opts = {}) {
   const look = spec.look;
   const mb = new MeshBuilder();
 
+  // Template necks are about as wide as the jaw (the child's even wider), so the
+  // chin doesn't read and the narrowest point lands on the chin. Cap the neck at
+  // an anatomical fraction of the head's width.
+  const headS = stations(T.head);
+  let headMaxHW = 0;
+  for (let u = 0.3; u <= 0.8; u += 0.05) headMaxHW = Math.max(headMaxHW, headS(u).hw);
+  const neckCap = headMaxHW * (bodyType === 'female' ? 0.66 : bodyType === 'child' ? 0.64 : 0.8);
+  const neckMidU = ((L.neck + L.head) / 2 - L.neck) / (1 - L.neck);
+  const neckHW = (u) => { const hw = headS(u).hw, c = Math.min(hw, neckCap * (1 + 8 * (u - neckMidU) ** 2)); return u <= 0.16 ? c : u >= 0.24 ? hw : lerp(c, hw, (u - 0.16) / 0.08); };
+
   // ---------- vertical mapping: template height fraction -> metres ----------
   // Photo landmarks win where they were clearly detected (within sane limits).
-  const neckMidT = (L.neck + L.head) / 2; // narrowest point of the neck
+  // The photo's neck is its narrowest point: map it onto the narrowest point of
+  // the neck we build.
+  // Same rule as measure.js: silhouette half-width along the built neck (piecewise
+  // linear between the head rings), the middle of the rows within 6 % of the minimum.
+  // (At the tube's actual vertex angles: a template bulge between them never shows.)
+  const sideW = (u) => { const sh = headS(u).shape; let m = 0; for (let k = 0; k < D.head; k++) { const t = (k / D.head) * TAU + Math.PI / D.head; m = Math.max(m, shapeAt(sh, t) * Math.abs(Math.cos(t))); } return neckHW(u) * m; };
+  const NU = [-0.025 / (1 - L.neck), 0.08, 0.16, 0.24, 0.32];
+  const NW = NU.map((u, i) => sideW(Math.max(u, 0)) * (i === 0 ? 0.95 : 1));
+  const neckW = (u) => { let i = 0; while (i + 2 < NU.length && NU[i + 1] < u) i++; return lerp(NW[i], NW[i + 1], (u - NU[i]) / (NU[i + 1] - NU[i])); };
+  let wMin = Infinity, neckMinU = neckMidU;
+  for (let u = 0; u <= 0.3; u += 0.005) if (neckW(u) < wMin) { wMin = neckW(u); neckMinU = u; }
+  { let a = neckMinU, b = neckMinU;
+    while (a - 0.005 >= 0 && neckW(a - 0.005) <= wMin * 1.06) a -= 0.005;
+    while (b + 0.005 <= 0.3 && neckW(b + 0.005) <= wMin * 1.06) b += 0.005;
+    neckMinU = (a + b) / 2; }
+  const neckMidT = L.neck + neckMinU * (1 - L.neck);
   // proportions: 'template' ignores the photo's landmarks and widths (basic mode,
   // and ground-truth characters for the benchmark); the photo still sets pose,
   // clothing and colours.
@@ -212,7 +268,7 @@ export function buildCharacter(spec, opts = {}) {
   };
 
   // ---------- photo width/depth factors per template station ----------
-  const torsoS = stations(T.torso), headS = stations(T.head), legS = stations(T.leg), armS = stations(T.arm), footS = stations(T.foot);
+  const torsoS = stations(T.torso), legS = stations(T.leg), armS = stations(T.arm), footS = stations(T.foot);
   const hasSide = !spec.notes.some((n) => n.startsWith('no side view'));
   const torsoY = (u) => lerp(L.crotch, L.neck, u);
   const TU = Array.from({ length: 15 }, (_, i) => i / 14);
@@ -235,7 +291,7 @@ export function buildCharacter(spec, opts = {}) {
 
   const legY = (u) => lerp(L.crotch, L.ankle[1], u);
   const LU = Array.from({ length: 13 }, (_, i) => i / 12);
-  const legW = TP ? ones(13).map((f) => f * (P.limb ?? 1)) : smooth(LU.map((u) => spec.legAtY(Y(legY(u))).hx / (legS(u).hw * H)), 0.85, 1.2).map((f) => f * (P.limb ?? 1));
+  const legW = TP ? ones(13).map((f) => f * (P.limb ?? 1)) : smooth(LU.map((u) => spec.legAtY(Y(legY(u))).hx / (legS(u).hw * H)), 0.85, 1.35).map((f) => f * (P.limb ?? 1));
   const legD = TP ? ones(13).map((f) => f * (P.limb ?? 1)) : smooth(LU.map((u) => {
     if (!hasSide) return 1;
     const l = spec.legAtY(Y(legY(u)));
@@ -258,8 +314,11 @@ export function buildCharacter(spec, opts = {}) {
     headMaxT = Math.max(headMaxT, s.hw * H); headMaxP = Math.max(headMaxP, h.hx);
     headDT = Math.max(headDT, s.hd * H); headDP = Math.max(headDP, (h.zf - h.zb) / 2);
   }
-  const fh = TP ? 1 : clamp(headMaxP / headMaxT, 0.9, 1.12);
-  const fhd = TP ? 1 : hasSide ? clamp(headDP / headDT, 0.9, 1.12) : fh;
+  // The photo's head outline includes the hair; the hair shell is added on top
+  // of the skull below, so take its thickness out first (else hair is counted twice).
+  const hairK = look.hasHair ? 1.1 : 1;
+  const fh = TP ? 1 : clamp(headMaxP / hairK / headMaxT, 0.9, 1.1);
+  const fhd = TP ? 1 : hasSide ? clamp(headDP / hairK / headDT, 0.9, 1.1) : fh;
 
   // Arms: thickness from the front view, length and angle from the pose.
   const armLenT = (L.fingertip - L.shoulder[0]) * H;
@@ -274,7 +333,7 @@ export function buildCharacter(spec, opts = {}) {
   // Body-type shaping that reads at crowd distance: women get a narrower waist,
   // fuller hips and a bust; men a broader chest and shoulders.
   const g = (u, m, sd) => Math.exp(-(((u - m) / sd) ** 2));
-  const female = bodyType === 'female', male = bodyType === 'male';
+  const female = bodyType === 'female', male = bodyType === 'male', child = bodyType === 'child';
   const widthMod = (u) => female ? 1 - 0.09 * g(u, 0.38, 0.1) + 0.08 * g(u, 0.05, 0.09) : male ? 1 + 0.05 * g(u, 0.8, 0.12) - 0.02 * g(u, 0.08, 0.1) : 1;
   const bustMod = (u) => (female ? 0.13 * g(u, 0.72, 0.07) : male ? 0.04 * g(u, 0.74, 0.1) : 0);
 
@@ -318,19 +377,29 @@ export function buildCharacter(spec, opts = {}) {
   // Clothing ring scales: a little looser than skin, with a lip at each edge.
   const LOOSE = 1.035, LIP = 1.07, EPS = 0.004 * H;
 
+  // Top style from the photo (or the UI): sleeveless tank, deep neckline.
+  const topStyle = opts.top && opts.top !== 'auto' ? opts.top : look.sleeveT <= 0.02 ? 'tank' : 'tshirt';
+  const tank = topStyle === 'tank';
+  const necklineY = Math.min(look.necklineY ?? Y(L.neck), Y(L.neck));
+  const deepNeck = !opts.tie && necklineY < Y(L.neck) - 0.025 * H; // a tie means a closed collar
+  const torsoUofY = (y) => clamp(invert((u) => Y(torsoY(u)), y), 0, 1);
+
   // ---------- torso (Top over Bottom with a hem lip) ----------
   {
     const hemY = look.hemY;
     const rings = [];
     // Above the shoulder joint the T-posed reference continues into the arm, so
     // taper the rings along a trapezius slope from the shoulder to the neck.
-    const slope0 = arms.Left.sh[1] - 0.03 * H, slope1 = pos.Neck[1] + 0.012 * H;
+    const slope0 = arms.Left.sh[1] - 0.03 * H, slope1 = Y(L.neck);
     const u0 = invert((u) => Y(torsoY(u)), slope0);
     const neckS = headS(0);
-    const neckRx = neckS.hw * H * fh * 1.35, neckRy = neckS.hd * H * fhd * 1.2;
+    const neckRx = neckHW(0) * H * fh * 1.25, neckRy = neckS.hd * H * fhd * 1.15;
+    // Shoulder profile, deltoid -> neck: a quick rounded corner over the deltoid,
+    // then the trapezius slope, rising steeply only close to the neck.
+    const slopeE = (t) => (t < 0.25 ? 0.4 * Math.sqrt(t / 0.25) : 0.4 + 0.6 * ((t - 0.25) / 0.75) ** 1.6);
     // The torso itself forms the shoulder cap, reaching just past the arm root,
     // so the arm emerges from under it instead of sitting on top like a pad.
-    const capX = shX + armS(0.2).hw * H * fa * 0.45;
+    const capX = shX + armS(0.2).hw * H * fa * 0.7;
     // Body-type shaping that reads at crowd distance: women get a narrower waist,
     // fuller hips and a bust; men a broader chest and shoulders.
     const pushRing = (u, scale, y = Y(torsoY(u))) => {
@@ -342,8 +411,7 @@ export function buildCharacter(spec, opts = {}) {
       if (y > slope0) {
         const base = torsoS(u0), t = clamp((y - slope0) / (slope1 - slope0), 0, 1);
         const bx = Math.max(base.hw * H * lookup(torsoW, u0) * widthMod(u0), capX), by = base.hd * H * lookup(torsoD, u0);
-        const e = Math.sqrt(t); // convex: shoulders fall away quickly from the neck
-        rx = lerp(bx, neckRx, e); ry = lerp(by, neckRy, t);
+        rx = lerp(bx, neckRx, slopeE(t)); ry = lerp(by, neckRy, t);
         shape = base.shape.map((v, k) => lerp(v, 1, t));
       }
       const bust = bustMod(u);
@@ -352,7 +420,17 @@ export function buildCharacter(spec, opts = {}) {
     const yOfU = (u) => Y(torsoY(u));
     const hemU = invert(yOfU, hemY), hemLowU = invert(yOfU, hemY - EPS);
     let hemDone = hemY <= yOfU(0) || hemY >= yOfU(1);
-    for (const u of TU) {
+    // Ring stations: sparser over the belly, denser over the shoulders (where the
+    // outline turns), plus one on a deep neckline so its edge is a clean line.
+    // Clothing edges (neckline, tank armhole line) get a ring of their own, so the
+    // colour change runs along a clean edge instead of zig-zagging across faces.
+    const armLineY = Y(L.armpit) - 0.012 * H;
+    const edges = [invert(yOfU, slope0)];
+    if (tank || deepNeck) edges.push(clamp(invert(yOfU, necklineY), 0.6, 0.97));
+    if (tank) edges.push(invert(yOfU, armLineY));
+    const TR = [0, 0.08, 0.16, 0.24, 0.33, 0.42, 0.51, 0.6, 0.68, 0.76, 0.88, 0.94, 1]
+      .filter((u) => u === 0 || u === 1 || edges.every((e) => Math.abs(u - e) > 0.025)).concat(edges).sort((a, b) => a - b);
+    for (const u of TR) {
       if (!hemDone && u > hemU) {
         pushRing(hemLowU, 1, hemY - EPS); // underside of the hem
         pushRing(hemU, LIP, hemY);        // the hem lip itself
@@ -360,8 +438,57 @@ export function buildCharacter(spec, opts = {}) {
       }
       pushRing(u);
     }
-    mb.mat = (c) => (c[1] >= hemY - EPS * 0.5 ? 'Top' : 'Bottom');
+    // Top style: tank (sleeveless, straps over bare shoulders), scoop neckline
+    // (chest skin above the neckline), or a plain crew neck.
+    // Straps sit mid-way between the neck and the shoulder tip.
+    const strapX = lerp(neckRx, capX, 0.42), strapW = 0.0065 * H;
+    // Decided per face by its normal (both triangles of a quad agree), so the
+    // front panel has straight sides. Tank: the front panel rises to the
+    // neckline, everything else above the armhole line is bare.
+    const front = (n) => n[2] > 0.8;
+    mb.mat = (c, n) => {
+      if (c[1] < hemY - EPS * 0.5) return 'Bottom';
+      if (tank) return c[1] > (front(n) ? Math.max(necklineY, armLineY) : armLineY) ? 'Skin' : 'Top';
+      if (deepNeck && front(n) && c[1] > necklineY) return 'Skin';
+      return 'Top';
+    };
     mb.tube(rings, D.torso, add(rings[0].c, [0, -0.012 * H, 0]), add(rings[rings.length - 1].c, [0, 0.004 * H, 0]));
+
+    // Tank straps: thin ribbons from the front panel, over the shoulder, down to
+    // the back armhole line, lying on the torso surface.
+    if (tank) {
+      const at = (y) => { // the built torso ring interpolated at height y
+        let i = 0;
+        while (i + 2 < rings.length && rings[i + 1].c[1] < y) i++;
+        const a = rings[i], b = rings[i + 1], k = clamp((y - a.c[1]) / (b.c[1] - a.c[1]), 0, 1);
+        const f = (t) => lerp(a.f ? a.f(t) : shapeAt(a.shape, t), b.f ? b.f(t) : shapeAt(b.shape, t), k);
+        return { cz: lerp(a.c[2], b.c[2], k), rx: lerp(a.rx, b.rx, k), ry: lerp(a.ry, b.ry, k), f, w: k < 0.5 ? a.w : b.w };
+      };
+      // Surface point at |x| = strapX on the front (sgn 1) or back (-1) at height y.
+      const surf = (y, sgn) => {
+        const r = at(y);
+        let t = 0;
+        for (let i = 0; i < 4; i++) t = Math.acos(clamp(strapX / (r.rx * r.f(sgn * t)), -1, 1));
+        return { z: r.cz + sgn * r.ry * r.f(sgn * t) * Math.sin(t), w: r.w, inside: strapX < r.rx * r.f(0) };
+      };
+      // Where the strap crosses the top of the shoulder.
+      let yTop = armLineY;
+      while (yTop < rings[rings.length - 1].c[1] && surf(yTop + 0.004 * H, 1).inside) yTop += 0.004 * H;
+      const yFront = Math.max(necklineY, armLineY);
+      const ys = [[yFront, 1], [lerp(yFront, yTop, 0.6), 1], [yTop, 0], [lerp(armLineY, yTop, 0.6), -1], [armLineY, -1]];
+      for (const sx of [1, -1]) {
+        const path = ys.map(([y, sgn]) => { const p = sgn ? surf(y, sgn) : { z: at(y).cz, w: at(y).w }; return { p: [sx * strapX, y, p.z], w: p.w }; });
+        const hub = [sx * strapX, yTop - 0.06 * H, at(yTop).cz]; // inside the shoulder: "outward" points away from it
+        const srings = path.map(({ p, w }, i) => {
+          const d = norm(sub(path[Math.min(i + 1, path.length - 1)].p, path[Math.max(i - 1, 0)].p));
+          let v = norm(cross([1, 0, 0], d));
+          if (dot(v, sub(p, hub)) < 0) v = mul(v, -1);
+          return { c: add(p, mul(v, 0.003 * H)), u: [1, 0, 0], v, rx: strapW / Math.SQRT1_2, ry: 0.0025 * H, w };
+        });
+        mb.mat = () => 'Top';
+        mb.tube(srings, 4, null, null);
+      }
+    }
   }
 
   // ---------- skirt / dress ----------
@@ -369,9 +496,13 @@ export function buildCharacter(spec, opts = {}) {
   // vertex follows the thigh on its side a little more towards the hem, so the
   // legs don't poke through when walking.
   const bottomStyle = opts.bottom && opts.bottom !== 'auto' ? opts.bottom : look.skirtY != null ? 'skirt' : 'auto';
-  const skirtY = bottomStyle === 'skirt' ? clamp(look.skirtY ?? Y(L.knee[1]) + 0.03 * H, Y(L.knee[1]) - 0.2 * H, Y(L.crotch) - 0.06 * H) : null;
+  const isSkirt = bottomStyle === 'skirt' || bottomStyle === 'pencil';
+  const pencil = bottomStyle === 'pencil';
+  // A-line: flares from the waist; pencil: straight to just above the knee.
+  const skirtY = !isSkirt ? null : pencil ? (look.skirtY ?? Y(L.knee[1]) + 0.015 * H)
+    : clamp(look.skirtY ?? Y(L.knee[1]) + 0.03 * H, Y(L.knee[1]) - 0.2 * H, Y(L.crotch) - 0.06 * H);
   if (skirtY != null) {
-    const yTop = Y(L.hip) + 0.02 * H;
+    const yTop = pencil ? Y(L.hip) + 0.02 * H : Y(lerp(L.hip, L.chest, 0.22));
     const tuTop = invert((u) => Y(torsoY(u)), yTop), ts = torsoS(tuTop);
     const rxTop = ts.hw * H * lookup(torsoW, tuTop) * 1.04, ryTop = ts.hd * H * lookup(torsoD, tuTop) * 1.04;
     const enclose = (y) => {
@@ -380,14 +511,15 @@ export function buildCharacter(spec, opts = {}) {
     };
     const [ex, ey] = enclose(skirtY);
     const photoHem = spec.torsoAt(skirtY + 0.01 * H).hx;
-    const rxHem = clamp(photoHem, Math.max(ex, rxTop * 0.95), rxTop * 1.6), ryHem = Math.max(ey, ryTop * (rxHem / rxTop) * 0.9);
-    const N = 6, rings = [];
+    const rxHem = pencil ? Math.max(ex, rxTop * 0.98) : clamp(photoHem, Math.max(ex, rxTop * 1.18), rxTop * 1.6);
+    const ryHem = Math.max(ey, ryTop * (rxHem / rxTop) * (pencil ? 1 : 0.9));
+    const N = 5, rings = [];
     for (let i = 0; i <= N; i++) {
       const t = i / N, y = lerp(yTop, skirtY, t), [lx, ly] = enclose(y);
       const k = 0.88 * t;
       rings.push({
         c: [0, y, lerp(ts.cz * H, legS(0.5).cz * H, t)], u: [1, 0, 0], v: [0, 0, 1],
-        rx: Math.max(lerp(rxTop, rxHem, t ** 1.3), lx), ry: Math.max(lerp(ryTop, ryHem, t ** 1.3), ly), shape: ts.shape.map((v) => lerp(v, 1, t)),
+        rx: Math.max(lerp(rxTop, rxHem, pencil ? t : t ** 1.15), lx), ry: Math.max(lerp(ryTop, ryHem, pencil ? t : t ** 1.15), ly), shape: ts.shape.map((v) => lerp(v, 1, t)),
         // Every hem vertex follows both thighs, weighted towards its own side.
         wf: (a) => { const c = Math.cos(a), wl = k * (1 + c) / 2, wr = k * (1 - c) / 2; return { Hips: 1 - k, LeftUpperLeg: wl, RightUpperLeg: wr }; },
       });
@@ -400,11 +532,14 @@ export function buildCharacter(spec, opts = {}) {
 
   // ---------- neck + head (Skin) ----------
   const headYofU = (u) => Y(lerp(L.neck, 1, u));
-  const HU = [0, 0.08, 0.16, 0.24, 0.32, 0.4, 0.48, 0.56, 0.64, 0.72, 0.8, 0.87, 0.93, 0.975];
+  const HU = [0, 0.08, 0.16, 0.24, 0.32, 0.4, 0.48, 0.56, 0.64, 0.72, 0.8, 0.87, 0.93, 0.97, 0.993];
+  // Above u = 0.8 the skull is a dome: round the crown instead of a point.
+  const dome = (u) => (u <= 0.8 ? 1 : Math.max(Math.sqrt(Math.max(0, 1 - ((u - 0.8) / 0.205) ** 2)), headS(u).hw / headS(0.8).hw));
   const headRing = (u, scale = 1) => {
-    const s = headS(u), y = headYofU(u);
+    const s = u > 0.8 ? { ...headS(0.8), cz: headS(u).cz } : headS(u), y = headYofU(u), d = dome(u);
+    const neck = u < 0.24 ? neckHW(u) / s.hw : 1;
     return {
-      c: [0, y, s.cz * H], u: [1, 0, 0], v: [0, 0, 1], rx: s.hw * H * fh * scale, ry: s.hd * H * fhd * scale, shape: s.shape,
+      c: [0, y, s.cz * H], u: [1, 0, 0], v: [0, 0, 1], rx: s.hw * H * fh * scale * d * neck, ry: s.hd * H * fhd * scale * d, shape: s.shape,
       w: weightsAlong(y, [['Neck', pos.Head[1]], ['Head', Infinity]], 0.01 * H),
     };
   };
@@ -424,7 +559,7 @@ export function buildCharacter(spec, opts = {}) {
     const nu = invert(headYofU, Y(lerp(L.head, 1, 0.3)));
     const s = headS(nu), y = headYofU(nu);
     const zf = s.cz * H + s.hd * H * fhd * shapeAt(s.shape, Math.PI / 2);
-    const nw = 0.011 * H, nh = 0.03 * H, np = 0.016 * H;
+    const nw = 0.011 * H, nh = 0.027 * H, np = 0.012 * H;
     mb.mat = () => 'Skin';
     // Base sunk well into the face so the wedge never floats off it in profile.
     mb.spike([[-nw, y - nh * 0.35, zf - 0.016 * H], [0, y + nh * 0.65, zf - 0.014 * H], [nw, y - nh * 0.35, zf - 0.016 * H]], [0, y - nh * 0.25, zf + np], W);
@@ -437,15 +572,47 @@ export function buildCharacter(spec, opts = {}) {
     }
   }
 
+  // ---------- eyes (Eyes) and brows (Hair) ----------
+  {
+    const W = { Head: 1 };
+    const eu = invert(headYofU, Y(lerp(L.head, 1, 0.5)));
+    const es = headS(eu), ey = headYofU(eu);
+    const rx = es.hw * H * fh, ry = es.hd * H * fhd;
+    const surfZ = (x) => { // front surface z of the head ring at |x|
+      const t = Math.acos(clamp(x / (rx * 1.02), -1, 1));
+      return es.cz * H + ry * shapeAt(es.shape, t) * Math.sin(t);
+    };
+    for (const sx of [1, -1]) {
+      const x = sx * rx * 0.36, z = surfZ(Math.abs(x)) - 0.0015 * H;
+      const ew = 0.0125 * H, eh = 0.0068 * H; // stylised, readable at crowd distance
+      mb.mat = () => 'Eyes';
+      // Almond shape, nearly flush with the face (a protruding point reads as a bead).
+      mb.spike([[x - ew, ey - 0.001 * H, z], [x - sx * ew * 0.2, ey + eh, z + 0.001 * H], [x + ew, ey + 0.001 * H, z], [x + sx * ew * 0.2, ey - eh * 0.8, z + 0.001 * H]], [x, ey, z + 0.0018 * H], W);
+      const by = ey + 0.019 * H, bz = surfZ(Math.abs(x)) + 0.0008 * H, bw = 0.012 * H;
+      mb.mat = () => 'Hair';
+      mb.spike([[x - sx * bw, by - 0.0015 * H, bz - 0.002 * H], [x + sx * bw, by + 0.001 * H, bz - 0.002 * H], [x + sx * bw, by + 0.0035 * H, bz - 0.002 * H], [x - sx * bw, by + 0.002 * H, bz - 0.002 * H]], [x, by + 0.001 * H, bz + 0.003 * H], W);
+    }
+  }
+
   // ---------- hair: short / bob / long / ponytail / bald ----------
   if (hairStyle !== 'bald') {
     // Never let the fringe fall below the brow line, nor the back above the ears.
-    const hairlineY = Math.max(look.hairlineY, Y(lerp(L.head, 1, 0.62)));
+    // The fringe may not drop below the upper forehead (photo hairlines are noisy).
+    const hairlineY = Math.max(look.hairlineY, Y(lerp(L.head, 1, 0.72)));
     let hairBackY = Math.min(look.hairBackY, Y(lerp(L.head, 1, 0.35)));
     if (hairStyle === 'bob') hairBackY = Math.min(hairBackY, Y(lerp(L.neck, L.head, 0.3)));
     if (hairStyle === 'long') hairBackY = -Infinity; // the back is hair all the way down to the curtain
     const sideHairY = hairStyle === 'short' || hairStyle === 'ponytail' ? lerp(hairlineY, hairBackY, 0.5) : lerp(hairlineY, hairBackY, 0.85);
-    const isHair = (y, t) => { const sn = Math.sin(t); return y > (sn > 0.35 ? hairlineY : sn < -0.3 ? hairBackY : sideHairY); };
+    // Front hairline curves up at the centre (parting) and sweeps down to the temples.
+    // Hair framing the face: from the parting it sweeps down past the temples to
+    // the side length (jaw level for long hair), not a straight fringe.
+    const sideY = Math.max(sideHairY, pos.Neck[1] + 0.03 * H);
+    const isHair = (y, t) => {
+      const sn = Math.sin(t);
+      if (sn > 0.8) return y > hairlineY + 0.014 * H * ((sn - 0.8) / 0.2) ** 1.5;
+      if (sn > 0.3) { const e = (sn - 0.3) / 0.5; return y > lerp(sideY, hairlineY, e * e * (3 - 2 * e)); }
+      return y > (sn < -0.3 ? hairBackY : sideHairY);
+    };
     const lowest = Math.max(Math.min(hairlineY, sideHairY, hairBackY), pos.Neck[1]) - 0.02 * H;
     // Widest part of the head: longer hair hangs straight down from there.
     let widest = headRing(0.5);
@@ -456,7 +623,7 @@ export function buildCharacter(spec, opts = {}) {
       if (headYofU(u) < lowest) continue;
       const r = headRing(u), y = r.c[1];
       if (hangs && y < widest.c[1]) { r.rx = Math.max(r.rx, widest.rx * 0.97); r.ry = Math.max(r.ry, widest.ry * 0.95); r.shape = widest.shape; }
-      const out = hangs ? 1.09 : 1.075;
+      const out = hairStyle === 'long' ? 1.12 : hangs ? 1.09 : 1.075;
       r.f = (t) => shapeAt(r.shape, t) * (isHair(y, t) ? out : 0.94);
       r.hairY = y;
       rings.push(r);
@@ -466,13 +633,13 @@ export function buildCharacter(spec, opts = {}) {
       const end = Math.min(look.hairEndY ?? Y(L.chest), pos.Neck[1] - 0.04 * H);
       const yTop = rings[0].c[1];
       const curtain = [];
-      for (let i = 1; i <= 5; i++) {
-        const y = lerp(yTop, end, i / 5);
+      for (let i = 1; i <= 4; i++) {
+        const y = lerp(yTop, end, i / 4);
         const tu = clamp(invert((u) => Y(torsoY(u)), y), 0, 1), ts = torsoS(tu);
         // Actual back surface of the (loose) shirt at this height.
         const back = ts.cz * H - ts.hd * H * lookup(torsoD, tu) * shapeAt(ts.shape, -Math.PI / 2) * LIP;
         // Hair falls from the head's width and spreads a little over the shoulders.
-        const rx = lerp(widest.rx * 1.08, Math.max(widest.rx * 1.25, ts.hw * H * lookup(torsoW, tu) * 0.7), i / 5);
+        const rx = lerp(widest.rx * 1.16, Math.max(widest.rx * 1.3, ts.hw * H * lookup(torsoW, tu) * 0.72), i / 4);
         curtain.push({
           c: [0, y, back + widest.ry * 0.25], u: [1, 0, 0], v: [0, 0, 1], rx, ry: widest.ry * 0.6, shape: widest.shape,
           w: weightsAlong(y, [['Chest', pos.Neck[1]], ['Neck', pos.Head[1]], ['Head', Infinity]], 0.02 * H),
@@ -485,7 +652,7 @@ export function buildCharacter(spec, opts = {}) {
       const S = D.head;
       const tk = (k) => (k / S) * TAU + Math.PI / S;
       // Curtain rings keep only their back half (plus a little round the sides).
-      const keep = (i, k) => (rings[i].curtain ? Math.sin(tk(k)) < 0.15 : isHair(rings[i].hairY, tk(k)));
+      const keep = (i, k) => (rings[i].curtain ? Math.sin(tk(k)) < 0.3 : isHair(rings[i].hairY, tk(k)));
       mb.mat = () => 'Hair';
       mb.tube(rings, S, null, add(headTop, [0, 0.006 * H, 0]), keep);
     }
@@ -505,24 +672,35 @@ export function buildCharacter(spec, opts = {}) {
     }
   }
 
-  // ---------- shirt collar ----------
-  {
+  // ---------- shirt collar (crew / shirt tops only) ----------
+  if (!tank && !deepNeck) {
     const n0 = headS(0), cz = (n0.cz * H + torsoS(1).cz * H) / 2;
-    const nr = n0.hw * H * fh, nd = n0.hd * H * fhd;
+    const nr = neckHW(0) * H * fh * 1.2, nd = n0.hd * H * fhd * 1.1; // hugs the (capped) neck
     const w = weightsAlong(0, [['Chest', -0.5], ['Neck', Infinity]], 0.6); // half chest, half neck
     const ring = (y, k) => ({ c: [0, y, cz], u: [1, 0, 0], v: [0, 0, 1], rx: nr * k, ry: nd * k, shape: n0.shape, w });
     const y0 = pos.Neck[1] - 0.006 * H, y1 = pos.Neck[1] + 0.011 * H;
-    mb.mat = () => 'Top';
-    mb.tube([ring(y0, 1.3), ring(y1, 1.36), ring(y1 + 0.001 * H, 1.18)], D.head, null, null); // slim flared neckline
+    mb.mat = () => (look.accent || opts.tie ? 'Accent' : 'Top');
+    mb.tube([ring(y0, 1.06), ring(y1, 1.14), ring(y1 + 0.001 * H, 0.98)], D.head, null, null); // slim flared neckline
+  }
+
+  // ---------- tie (Accent) ----------
+  if (opts.tie && !tank) {
+    const zf = (y) => { const u = torsoUofY(y), t = torsoS(u); return t.cz * H + t.hd * H * lookup(torsoD, u) * shapeAt(t.shape, Math.PI / 2) * LOOSE * (1 + bustMod(u)) + 0.004 * H; };
+    const yK = pos.Neck[1] - 0.012 * H, yB = Y(lerp(L.hip, L.chest, 0.35));
+    const rings = [[yK + 0.006 * H, 0.012], [yK - 0.012 * H, 0.008], [lerp(yK, yB, 0.7), 0.018], [yB, 0.02]].map(([y, w]) => (
+      { c: [0, y, zf(y)], u: [1, 0, 0], v: [0, 0, 1], rx: w * H * 0.5, ry: 0.004 * H, w: weightsAlong(y, [['Spine', pos.Chest[1]], ['Chest', Infinity]], 0.03 * H) }));
+    mb.mat = () => 'Accent';
+    mb.tube(rings, 4, null, add(rings[3].c, [0, -0.02 * H, 0]));
   }
 
   // ---------- arms (sleeve with cuff, mitten hand) ----------
   for (const side of ['Left', 'Right']) {
     const { sh, dir, uA } = arms[side];
-    const sleeveEnd = Math.min(look.sleeveT, 1) * wristU; // fraction of the full arm length
+    const sleeveEnd = tank ? -1 : Math.min(look.sleeveT, 1) * wristU; // fraction of the full arm length (-1: sleeveless)
     const segs = [[side + 'Shoulder', 0.02], [side + 'UpperArm', elbowU], [side + 'LowerArm', wristU], [side + 'Hand', Infinity]];
-    const AU = [...new Set([-0.14, -0.06, 0.06, 0.13, 0.2, 0.27, 0.34, elbowU - 0.04, elbowU, elbowU + 0.05, 0.58, 0.66, 0.74, wristU - 0.03, wristU, wristU + 0.03, 0.87, 0.93, 0.962])].sort((a, b) => a - b);
+    const AU = [...new Set([-0.09, -0.035, 0.06, 0.13, 0.2, 0.32, elbowU - 0.04, elbowU, elbowU + 0.05, 0.58, 0.66, 0.74, wristU - 0.03, wristU, wristU + 0.03, 0.87, 0.93, 0.962])].sort((a, b) => a - b);
     const rings = [];
+    const rootDir = norm([-Math.sign(dir[0]), 0.3, 0]);
     // Near the joint the T-pose slice also cuts the torso side: cap the root
     // rings at the deltoid size so the shoulder stays round.
     const delt = armS(0.2);
@@ -535,18 +713,21 @@ export function buildCharacter(spec, opts = {}) {
       const f = u > wristU ? Math.sqrt(fa) : fa;
       // Fingers curl slightly towards the palm (palm = -uA).
       const curl = u > wristU + 0.04 ? -0.02 * H * ((u - wristU - 0.04) / (1 - wristU - 0.04)) ** 2 : 0;
-      const c = add(add(sh, mul(dir, armLen * u)), mul(uA, (s.cx - L.shoulder[1]) * H + curl));
+      // The buried root (u < 0) runs inward into the torso, not up along a
+      // hanging arm, so it can't poke out above the shoulder.
+      const along = u < 0 ? mul(rootDir, -u * armLen) : mul(dir, armLen * u);
+      const c = add(add(sh, along), mul(uA, (s.cx - L.shoulder[1]) * H + curl));
       const flat = u < 0.2 ? lerp(0.9, 1, clamp(u / 0.2, 0, 1)) : 1; // flatter top at the arm root
       rings.push({ c: add(c, [0, 0, (s.cz - L.shoulder[2]) * H]), u: uA, v: [0, 0, 1], rx: s.hw * H * f * scale * flat, ry: s.hd * H * f * scale, shape: s.shape, w: weightsAlong(u, segs, 0.035) });
     };
-    let cuffDone = sleeveEnd >= 0.985;
+    let cuffDone = sleeveEnd >= 0.985 || sleeveEnd < 0;
     for (const u of AU) {
       if (!cuffDone && u > sleeveEnd) { ring(sleeveEnd, LIP); ring(sleeveEnd + 0.006, 1); cuffDone = true; }
       // The root ring is buried in the torso: keep it small so it can't poke out.
-      ring(u, u < -0.1 ? 0.75 : u < 0 ? 0.92 : u > 0.95 ? 0.72 : u <= sleeveEnd ? LOOSE : 1); // blunt fingertips
+      ring(u, u < -0.06 ? 0.72 : u < 0 ? 0.9 : u > 0.95 ? 0.72 : u <= sleeveEnd ? LOOSE : 1); // blunt fingertips
     }
     mb.mat = (c) => (dot(sub(c, sh), dir) / armLen <= sleeveEnd + 0.003 ? 'Top' : 'Skin');
-    mb.tube(rings, D.limb, add(sh, mul(dir, -armLen * 0.16)), add(add(sh, mul(dir, armLen * 0.972)), mul(uA, -0.018 * H))); // rounded mitten tip
+    mb.tube(rings, D.limb, add(sh, mul(rootDir, armLen * 0.1)), add(add(sh, mul(dir, armLen * 0.972)), mul(uA, -0.018 * H))); // rounded mitten tip
 
     // Thumb: from the side of the palm, pointing forward and down along the hand.
     const hs = armS(wristU + 0.05);
@@ -556,8 +737,10 @@ export function buildCharacter(spec, opts = {}) {
     const tv = norm(cross(td, uA));
     const trings = [0, 0.45, 0.85].map((f, i) => ({ c: add(base, mul(td, tl * f)), u: uA, v: tv, rx: [0.008, 0.0075, 0.0055][i] * H, ry: [0.009, 0.0085, 0.006][i] * H, w: { [side + 'Hand']: 1 } }));
     mb.mat = () => 'Skin';
-    mb.tube(trings, 5, null, add(base, mul(td, tl)));
+    mb.tube(trings, 4, null, add(base, mul(td, tl)));
   }
+
+  const heels = opts.shoes && opts.shoes !== 'auto' ? opts.shoes === 'heels' : !!look.heels;
 
   // ---------- legs (trousers with hem) + feet (shoes) ----------
   for (const [side, s] of [['Left', 1], ['Right', -1]]) {
@@ -591,24 +774,36 @@ export function buildCharacter(spec, opts = {}) {
     const footLen = (L.toeZ - L.heelZ) * H;
     const ballZ = pos[side + 'Toes'][2];
     const yScale = Y(L.ankle[1]) / (L.ankle[1] * H); // feet follow the leg's vertical scale
+    // Heels: the rear of the shoe rises (toes stay on the floor) and stands on a
+    // block heel. Women's shoes are a little slimmer.
+    const lift = heels ? 0.036 * H : 0;
+    const slim = female ? 0.86 : 1;
     const frings = [0, 0.12, 0.25, 0.4, 0.55, 0.7, 0.82, 0.92, 1].map((u) => {
       const uu = lerp(0.02, 0.98, u);
       const st = footS(uu);
       const z = L.heelZ * H + footLen * uu;
+      const rise = lift * clamp((0.62 - u) / 0.42, 0, 1) ** 0.8;
+      const k = heels ? 0.8 : 1;
       return {
-        c: [s * legCX(1) + s * (st.cx - legS(1).cx) * H, st.cz * H * yScale, z], u: [1, 0, 0], v: [0, 1, 0],
-        rx: st.hw * H * 1.04, ry: st.hd * H * yScale * 1.04, shape: s > 0 ? st.shape : mirrorShape(st.shape),
+        c: [s * legCX(1) + s * (st.cx - legS(1).cx) * H, st.cz * H * yScale * k + rise, z], u: [1, 0, 0], v: [0, 1, 0],
+        rx: st.hw * H * 1.04 * slim, ry: st.hd * H * yScale * 1.04 * k, shape: s > 0 ? st.shape : mirrorShape(st.shape),
         w: weightsAlong(z, [[side + 'Foot', ballZ], [side + 'Toes', Infinity]], 0.012 * H),
       };
     });
     mb.mat = () => 'Shoes';
     mb.tube(frings, D.foot, add(frings[0].c, [0, 0, -0.006 * H]), add(frings[frings.length - 1].c, [0, -0.004 * H, 0.008 * H]));
+    if (heels) {
+      const hz = L.heelZ * H + footLen * 0.1, hx = frings[1].c[0], bw = 0.011 * H;
+      const block = [[0, 0.85], [lift + 0.012 * H, 1]].map(([y, kk]) => ({ c: [hx, y, hz], u: [1, 0, 0], v: [0, 0, 1], rx: bw * kk, ry: bw * kk * 1.1, w: { [side + 'Foot']: 1 } }));
+      mb.tube(block, 4, add(block[0].c, [0, -0.001 * H, 0]), null);
+    }
   }
 
   // ---------- normalise: feet on y = 0, total height exactly H ----------
   let minY = Infinity, maxY = -Infinity;
   for (const t of mb.tris) for (const p of t.p) { minY = Math.min(minY, p[1]); maxY = Math.max(maxY, p[1]); }
-  const k = H / (maxY - minY);
+  const rawHeight = maxY - minY;
+  const k = H / rawHeight;
   const fix = (p) => [p[0] * k, (p[1] - minY) * k, p[2] * k];
   for (const t of mb.tris) t.p = t.p.map(fix);
   for (const b in pos) pos[b] = fix(pos[b]);
@@ -632,12 +827,13 @@ export function buildCharacter(spec, opts = {}) {
   let start = 0;
   for (const m of MATERIALS) {
     const count = mb.tris.filter((t) => t.m === m).length;
-    if (count) groups.push({ material: m, color: look[m.toLowerCase()], start, count });
+    const color = m === 'Accent' ? (look.accent || opts.accentColor || [150, 32, 44]) : m === 'Eyes' ? (look.eyes || [46, 34, 30]) : look[m.toLowerCase()];
+    if (count) groups.push({ material: m, color, start, count });
     start += count;
   }
 
   const bones = BONES.map((name) => ({ name, parent: PARENT[name] ? BI[PARENT[name]] : -1, pos: pos[name] }));
   // Resolved style names for reports: skirt, shorts (legs bare above the knee) or trousers.
-  const resolvedBottom = skirtY != null ? 'skirt' : bottomStyle === 'shorts' || (bottomStyle === 'auto' && look.trouserT < 0.6) ? 'shorts' : 'trousers';
-  return { bones, bodyType, hairStyle, bottomStyle: resolvedBottom, mesh: { position, normal, joints, weights, triangles: N, groups }, spec };
+  const resolvedBottom = skirtY != null ? (pencil ? 'pencil' : 'skirt') : bottomStyle === 'shorts' || (bottomStyle === 'auto' && look.trouserT < 0.6) ? 'shorts' : 'trousers';
+  return { bones, bodyType, hairStyle, topStyle, heels, bottomStyle: resolvedBottom, mesh: { position, normal, joints, weights, triangles: N, groups }, spec, rawHeight };
 }

@@ -8,7 +8,7 @@ import { validateInputs, summarizeValidation } from './validate.js';
 
 /**
  * @param {{front:ImageLike, side?:ImageLike|null, back?:ImageLike|null}} images RGBA {width,height,data}
- * @param {{height?:number, body?:'auto'|'male'|'female'|'child', preset?:string, hair?:string, bottom?:string, colors?:object, strict?:boolean, detail?:'low'|'medium'|'high', animations?:boolean, name?:string}} opts
+ * @param {{height?:number, body?:'auto'|'male'|'female'|'child', preset?:string, hair?:string, bottom?:'auto'|'trousers'|'shorts'|'skirt'|'pencil', top?:'auto'|'tshirt'|'tank', shoes?:'auto'|'flat'|'heels', tie?:boolean, colors?:object, strict?:boolean, detail?:'low'|'medium'|'high', animations?:boolean, name?:string}} opts
  */
 export function generateCharacter(images, opts = {}) {
   const t0 = now();
@@ -29,7 +29,7 @@ export function generateCharacter(images, opts = {}) {
     err.validation = validation;
     throw err;
   }
-  const character = buildCharacter(spec, { detail: opts.detail, body: opts.body, preset: opts.preset, hair: opts.hair, bottom: opts.bottom, proportions: opts.proportions });
+  const character = buildCharacter(spec, { detail: opts.detail, body: opts.body, preset: opts.preset, hair: opts.hair, bottom: opts.bottom, top: opts.top, shoes: opts.shoes, tie: opts.tie, accentColor: opts.accentColor, proportions: opts.proportions });
   const animations = opts.animations === false ? [] : makeAnimations(character);
   const glb = exportGLB(character, animations, { name: opts.name });
   return {
@@ -44,6 +44,8 @@ export function generateCharacter(images, opts = {}) {
       body: character.bodyType,
       hair: character.hairStyle,
       bottom: character.bottomStyle,
+      top: character.topStyle,
+      heels: character.heels,
       materials: character.mesh.groups.map((g) => g.material),
       clips: animations.map((a) => a.name),
       bytes: glb.byteLength,

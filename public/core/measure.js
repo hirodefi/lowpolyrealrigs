@@ -37,7 +37,21 @@ export function measureBody(front, side, back, opts = {}) {
   for (let v = 0.02; v <= 0.12; v += 0.004) { const w = centralHalf(v); if (w > headMaxW) { headMaxW = w; headMaxV = v; } }
   let neckV = 0.14, neckW = Infinity;
   for (let v = headMaxV; v <= 0.24; v += 0.004) { const w = centralHalf(v); if (w < neckW) { neckW = w; neckV = v; } }
-  if (neckW > headMaxW * 0.9) { neckV = 0.14; neckW = headMaxW * 0.6; notes.push('neck not visible - using proportions'); detected.neck = false; }
+  // The neck is a narrow stretch, not a point: take the middle of the rows
+  // within a few % of the minimum.
+  let neckHidden = false;
+  {
+    let a = neckV, b = neckV;
+    while (a - 0.004 >= headMaxV && centralHalf(a - 0.004) <= neckW * 1.06) a -= 0.004;
+    while (b + 0.004 <= 0.24 && centralHalf(b + 0.004) <= neckW * 1.06) b += 0.004;
+    neckV = (a + b) / 2;
+    // A real neck widens gradually into the jaw; a sharp step right above it
+    // is the hem of hanging hair (a bob) hiding most of the neck.
+    neckHidden = centralHalf(a - 0.008) > neckW * 1.45;
+  }
+  // A visible neck is clearly narrower than the head; otherwise hair (a bob)
+  // or a collar hides it.
+  if (neckW > headMaxW * 0.8 || neckHidden) { neckV = 0.14; neckW = headMaxW * 0.6; notes.push('neck not visible - using proportions'); detected.neck = false; }
   neckV = clamp(neckV, 0.1, 0.2);
 
   // --- Shoulders: first row where the body gets much wider than the neck.
@@ -203,7 +217,7 @@ export function measureBody(front, side, back, opts = {}) {
       if (x === gapStart) return Math.abs(axisX(y) - cx) - half; // touching
       return Math.abs(x - cx);
     };
-    arms.push({ len, angle, upper, fore, hand: thick(0.9), sample, torsoEdge });
+    arms.push({ len, angle, upper, fore, hand: thick(0.9), sample, axisAt, torsoEdge });
   }
   const good = arms.filter(Boolean);
   detected.arms = good.length;
@@ -310,7 +324,7 @@ export function measureBody(front, side, back, opts = {}) {
       for (let v = waistV - 0.03; v <= waistV + 0.03; v += 0.005) { const d = dep(v); if (d) wd = Math.min(wd, d); }
       if (chest && isFinite(wd)) bust = chest / wd;
     }
-    return { waistHip: waist / Math.max(hip, 1), hipShoulder: hip / shoulderHalf, bust, head: detected.neck ? neckV : null };
+    return { waistHip: waist / Math.max(hip, 1), hipShoulder: hip / shoulderHalf, bust, head: detected.neck ? neckV : null, headW: headMaxW / shoulderHalf };
   })();
   const spec = {
     shape,
@@ -354,6 +368,17 @@ function regionColor(S, x0, y0, x1, y1) {
       r += data[i]; g += data[i + 1]; b += data[i + 2]; n++;
     }
   if (!n && edge) return regionColorAll(S, x0, y0, x1, y1); // thin region: use what there is
+  return n ? [r / n, g / n, b / n] : null;
+}
+function regionColorInterior(S, x0, y0, x1, y1) {
+  const { data } = S.img;
+  let r = 0, g = 0, b = 0, n = 0;
+  for (let y = Math.max(0, Math.floor(y0)); y <= Math.min(S.h - 1, Math.ceil(y1)); y++)
+    for (let x = Math.max(0, Math.floor(x0)); x <= Math.min(S.w - 1, Math.ceil(x1)); x++) {
+      if (!S.mask[y * S.w + x] || !S.on(x - 2, y) || !S.on(x + 2, y) || !S.on(x, y - 2) || !S.on(x, y + 2)) continue;
+      const i = (y * S.w + x) * 4;
+      r += data[i]; g += data[i + 1]; b += data[i + 2]; n++;
+    }
   return n ? [r / n, g / n, b / n] : null;
 }
 function regionColorAll(S, x0, y0, x1, y1) {
@@ -457,7 +482,9 @@ function measureLook({ F, cx, H, back, spec, neckV, shoulderV, crotchV, arms, sh
     }
     // Skin from the very first sample on = sleeveless.
     if (hit != null) sleeveT = Math.min(sleeveT, hit <= 0.15 ? 0 : clamp(hit, 0.05, 1));
-    const hc = a.sample(0.9);
+    // Hand colour from interior pixels only (a thin wrist is mostly anti-aliased edge).
+    const [hx, hy] = a.axisAt(0.9);
+    const hc = regionColorInterior(F, hx - 2, hy - 2, hx + 2, hy + 2);
     if (hc && cdist(hc, skin) < 70) hands.push(hc);
   }
   if (hands.length) skin = skin.map((c, i) => (c + hands.reduce((s, h) => s + h[i], 0) / hands.length) / 2);
@@ -466,7 +493,7 @@ function measureLook({ F, cx, H, back, spec, neckV, shoulderV, crotchV, arms, sh
   let trouserT = 1;
   if (skirtHemV == null) {
     let hit = null;
-    for (let t = 0.2; t <= 0.9; t += 0.05) {
+    for (let t = 0.04; t <= 0.9; t += 0.03) {
       const v = crotchV + (0.955 - crotchV) * t;
       const r = F.runNear(px(v), cx + shoulderHalf * 0.45);
       const c = r && regionColor(F, r[0] + 1, px(v), r[1] - 1, px(v + 0.01));
@@ -475,7 +502,7 @@ function measureLook({ F, cx, H, back, spec, neckV, shoulderV, crotchV, arms, sh
       if (isSkin && hit == null) hit = t;
       else if (!isSkin) hit = null;
     }
-    if (hit != null) trouserT = clamp(hit, 0.1, 1);
+    if (hit != null) trouserT = clamp(hit, 0.03, 1);
   }
 
   // Hair coverage: for each head height, is the front of the head hair or
@@ -571,9 +598,11 @@ function measureLook({ F, cx, H, back, spec, neckV, shoulderV, crotchV, arms, sh
   let necklineV = neckV, accent = null;
   {
     const pix = (v) => regionColor(F, cx - 1, px(v), cx + 1, px(v));
+    // Top-coloured (not skin, not hanging hair) here and a little lower too, so a
+    // stray strand or shadow under the chin doesn't count as the neckline.
+    const isTop = (c) => c && cdist(c, top) < cdist(c, skin) - 10 && (!hasHair || cdist(c, top) < cdist(c, hair));
     for (let v = neckV; v <= shoulderV + 0.12; v += 0.004) {
-      const c = pix(v);
-      if (c && cdist(c, top) < cdist(c, skin) - 10) { necklineV = v; break; }
+      if (isTop(pix(v)) && isTop(pix(v + 0.008))) { necklineV = v; break; }
     }
     // The top's real colour: just below the neckline, away from skin and arms.
     const t2 = regionColor(F, cx - shoulderHalf * 0.3, px(necklineV + 0.03), cx + shoulderHalf * 0.3, px(necklineV + 0.09));

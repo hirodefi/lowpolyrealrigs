@@ -32,6 +32,8 @@ for (const detail of ['low', 'medium', 'high']) {
   check(!g.images && !g.textures && !g.samplers, 'no images / textures in the file');
   const matNames = g.materials.map((m) => m.name);
   check(['Skin', 'Hair', 'Top', 'Bottom', 'Shoes'].every((n) => matNames.includes(n)), `materials named Skin/Hair/Top/Bottom/Shoes (got ${matNames.join(',')})`);
+  // Extra groups the bake keeps as fixed colours: Accent (collar / tie), Eyes.
+  check(matNames.every((n) => ['Skin', 'Hair', 'Top', 'Bottom', 'Shoes', 'Accent', 'Eyes'].includes(n)), 'no materials outside Skin/Hair/Top/Bottom/Shoes/Accent/Eyes');
   check(g.materials.every((m) => m.pbrMetallicRoughness?.baseColorFactor?.length === 4 && !m.pbrMetallicRoughness.baseColorTexture), 'every material is a flat baseColorFactor');
   check(g.meshes.length === 1 && g.skins.length === 1 && g.nodes.filter((n) => n.mesh != null).length === 1, 'exactly one skinned mesh + one skin');
   check(g.meshes[0].primitives.length === matNames.length && g.meshes[0].primitives.every((p) => !p.targets), 'one primitive per material, no morph targets');
@@ -81,6 +83,15 @@ for (const [hair, bottom] of [['long', 'skirt'], ['bob', 'trousers'], ['ponytail
   const w = res.character.mesh.weights;
   for (let v = 0; v < w.length / 4; v++) if (Math.abs(w[v * 4] + w[v * 4 + 1] + w[v * 4 + 2] + w[v * 4 + 3] - 1) > 1e-4) badW++;
   check(report.issues.numErrors === 0 && badW === 0 && res.stats.hair === hair, `hair ${hair} + ${bottom}: valid GLB, weights ok, ${res.stats.triangles} tris`);
+}
+
+// Clothing options: tank top + heels + straight knee skirt, shirt + tie, A-line skirt.
+for (const o of [{ top: 'tank', shoes: 'heels', bottom: 'pencil' }, { top: 'tshirt', tie: true, bottom: 'trousers' }, { top: 'tank', bottom: 'skirt', shoes: 'flat' }]) {
+  const res = generateCharacter(imgs, { body: 'female', hair: 'long', ...o });
+  const report = await validator.validateBytes(res.glb);
+  const mats = res.stats.materials, s = res.stats;
+  const ok = report.issues.numErrors === 0 && s.top === o.top && s.bottom === o.bottom && s.heels === (o.shoes === 'heels') && (!o.tie || mats.includes('Accent'));
+  check(ok && s.triangles <= 2700, `${o.top}${o.tie ? '+tie' : ''} / ${o.bottom} / ${o.shoes || 'auto'}: valid GLB, styles applied, ${s.triangles} tris (${mats.join(',')})`);
 }
 
 // Front-only input must still work (side/back optional).

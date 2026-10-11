@@ -104,6 +104,9 @@ $('#generate').addEventListener('click', async () => {
       body: $('#body').value,
       hair: $('#hair').value,
       bottom: $('#bottom').value,
+      top: $('#top').value,
+      shoes: $('#shoes').value,
+      tie: $('#tie').checked,
       preset: $('#preset').value,
       animations: $('#anims').checked,
     });
@@ -115,7 +118,7 @@ $('#generate').addEventListener('click', async () => {
     setCompare(false);
     const s = res.stats;
     $('#stats').innerHTML = [
-      ['Body', s.body], ['Hair', s.hair], ['Clothes', s.bottom === 'skirt' ? 'skirt / dress' : 'trousers'], ['Triangles', s.triangles], ['Bones', s.bones], ['Materials', s.materials.join(', ')],
+      ['Body', s.body], ['Hair', s.hair], ['Clothes', `${s.top}, ${({ skirt: 'A-line skirt', pencil: 'knee skirt' })[s.bottom] || s.bottom}${s.heels ? ', heels' : ''}`], ['Triangles', s.triangles], ['Bones', s.bones], ['Materials', s.materials.join(', ')],
       ['Clips', s.clips.length ? s.clips.join(', ') : 'none'], ['File size', `${(s.bytes / 1024).toFixed(1)} KB`], ['Time', `${s.ms} ms`],
     ].map(([k, v]) => `<div><dt>${k}</dt><dd>${v}</dd></div>`).join('');
     status(`Done.${s.notes.length ? '\nNotes: ' + s.notes.join('; ') : ''}`);
