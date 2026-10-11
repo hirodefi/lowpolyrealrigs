@@ -5,7 +5,7 @@
 /**
  * @param {{width:number,height:number,data:Uint8ClampedArray|Uint8Array}} img RGBA
  */
-export function analyzeImage(img) {
+export function analyzeImage(img, opts = {}) {
   const { width: w, height: h, data } = img;
   const mask = new Uint8Array(w * h);
 
@@ -19,8 +19,17 @@ export function analyzeImage(img) {
     floodBackground(img, mask);
   }
 
-  // 2. Keep only the largest connected blob (drops noise, shadows, logos).
-  keepLargestComponent(mask, w, h);
+  // 2. Keep only the largest connected blob (drops noise, shadows, logos), then
+  //    close short vertical holes: clothing the same colour as the backdrop
+  //    (grey shorts on a grey studio wall) leaves a band with body above and
+  //    below it. Long gaps (between the legs, beside the arms) stay open.
+  // opts.raw: keep every pixel as-is (used for renders of our own models, where
+  // a disconnected piece is a defect to report, not noise to drop).
+  if (!opts.raw) {
+    keepLargestComponent(mask, w, h);
+    closeVertical(mask, w, h);
+    keepLargestComponent(mask, w, h);
+  }
 
   // 3. Bounding box.
   let x0 = w, x1 = -1, y0 = h, y1 = -1;
@@ -51,7 +60,32 @@ export function analyzeImage(img) {
  * channel). This copes with studio gradients and vignettes, where a single
  * background colour fails. Everything not flooded is the subject (mask = 1).
  */
-function floodBackground({ width: w, height: h, data }, mask) {
+export function floodBackground(img, mask, model = backgroundModel(img)) {
+  const { width: w, height: h } = img;
+  const { dist, thr } = model;
+  // Flood from the border through background-like pixels.
+  const bg = new Uint8Array(w * h);
+  const stack = new Int32Array(w * h);
+  let sp = 0;
+  const seed = (i) => { if (!bg[i] && dist[i] < thr) { bg[i] = 1; stack[sp++] = i; } };
+  for (let x = 0; x < w; x++) { seed(x); seed((h - 1) * w + x); }
+  for (let y = 0; y < h; y++) { seed(y * w); seed(y * w + w - 1); }
+  while (sp) {
+    const p = stack[--sp], x = p % w, y = (p / w) | 0;
+    if (x > 0) seed(p - 1);
+    if (x < w - 1) seed(p + 1);
+    if (y > 0) seed(p - w);
+    if (y < h - 1) seed(p + w);
+  }
+  for (let i = 0; i < w * h; i++) mask[i] = bg[i] ? 0 : 1;
+}
+
+/**
+ * Smooth backdrop model fitted to the image border, plus every pixel's colour
+ * distance from it. Shared by segmentation and the input validator.
+ * @returns {{coef:number[][], noise:number, thr:number, dist:Float32Array, at:(x:number,y:number)=>number[]}}
+ */
+export function backgroundModel({ width: w, height: h, data }) {
   // Border samples (normalised coordinates).
   const pts = [];
   const push = (x, y) => { const i = (y * w + x) * 4; pts.push([x / w, y / h, data[i], data[i + 1], data[i + 2]]); };
@@ -81,7 +115,9 @@ function floodBackground({ width: w, height: h, data }, mask) {
   }
   const res = pts.map((p) => Math.hypot(p[2] - model(p[0], p[1], 0), p[3] - model(p[0], p[1], 1), p[4] - model(p[0], p[1], 2)));
   const noise = res.slice().sort((a, b) => a - b)[res.length >> 1];
-  const thr = Math.max(28, Math.min(60, noise * 6 + 18));
+  // Clean studio/CG backdrops have almost no noise, so dark hair in shadow can be
+  // separated with a low threshold; noisy photos get a proportionally higher one.
+  const thr = Math.max(13, Math.min(60, noise * 6 + 11));
 
   // Distance of every pixel from the background model.
   const dist = new Float32Array(w * h);
@@ -91,31 +127,19 @@ function floodBackground({ width: w, height: h, data }, mask) {
       const m = [0, 1, 2].map((c) => coef[c][0] + coef[c][1] * nx + coef[c][2] * ny + coef[c][3] * nx * nx + coef[c][4] * ny * ny + coef[c][5] * nx * ny);
       const r = data[i * 4], g = data[i * 4 + 1], b = data[i * 4 + 2];
       dist[i] = Math.hypot(r - m[0], g - m[1], b - m[2]);
-      // Floor shadows: darker than the background but with the same tint. Only
-      // below the head zone, so dark hair against a pale backdrop is safe.
-      if (y > h * 0.3) {
+      // Floor shadows: clearly darker than the backdrop with the same tint, and
+      // only at floor level. Anywhere higher this would erase neutral grey
+      // clothing and anti-aliased seams; wall shadows are flagged by the validator.
+      if (y > h * 0.88) {
         const sum = r + g + b + 1, ms = m[0] + m[1] + m[2] + 1, k = sum / ms;
         const chroma = Math.abs(r / sum - m[0] / ms) + Math.abs(g / sum - m[1] / ms) + Math.abs(b / sum - m[2] / ms);
-        if (k > 0.3 && k < 1 && chroma < 0.04) dist[i] = Math.min(dist[i], chroma * 500);
+        if (k > 0.3 && k < 0.92 && chroma < 0.04) dist[i] = Math.min(dist[i], chroma * 500);
       }
     }
   }
 
-  // Flood from the border through background-like pixels.
-  const bg = new Uint8Array(w * h);
-  const stack = new Int32Array(w * h);
-  let sp = 0;
-  const seed = (i) => { if (!bg[i] && dist[i] < thr) { bg[i] = 1; stack[sp++] = i; } };
-  for (let x = 0; x < w; x++) { seed(x); seed((h - 1) * w + x); }
-  for (let y = 0; y < h; y++) { seed(y * w); seed(y * w + w - 1); }
-  while (sp) {
-    const p = stack[--sp], x = p % w, y = (p / w) | 0;
-    if (x > 0) seed(p - 1);
-    if (x < w - 1) seed(p + 1);
-    if (y > 0) seed(p - w);
-    if (y < h - 1) seed(p + w);
-  }
-  for (let i = 0; i < w * h; i++) mask[i] = bg[i] ? 0 : 1;
+  const at = (x, y) => [0, 1, 2].map((c) => model(x / w, y / h, c));
+  return { coef, noise, thr, dist, at };
 }
 
 /** Gaussian elimination on an augmented n x (n+1) matrix. */
@@ -132,6 +156,46 @@ function solve(M) {
     }
   }
   return M.map((row, i) => (row[i] ? row[n] / row[i] : 0));
+}
+
+function closeVertical(mask, w, h) {
+  let y0 = h, y1 = -1;
+  for (let i = 0; i < w * h; i++) if (mask[i]) { const y = (i / w) | 0; if (y < y0) y0 = y; if (y > y1) y1 = y; }
+  if (y1 < 0) return;
+  // Only the waist-to-thigh band: that is where backdrop-coloured clothing
+  // (shorts, belts, waistbands) breaks the silhouette. Elsewhere short gaps are
+  // real (beside the neck, under the arms, between the feet).
+  const maxGap = Math.round((y1 - y0) * 0.085);
+  const b0 = Math.round(y0 + (y1 - y0) * 0.3), b1 = Math.round(y0 + (y1 - y0) * 0.62);
+  for (let x = 0; x < w; x++) {
+    let last = -1;
+    for (let y = b0 - maxGap; y <= b1 + maxGap; y++) {
+      if (y < y0 || y > y1) continue;
+      if (!mask[y * w + x]) continue;
+      if (last >= 0 && y - last > 1 && y - last - 1 <= maxGap && last + 1 >= b0 - maxGap && y - 1 <= b1 + maxGap) for (let k = last + 1; k < y; k++) mask[k * w + x] = 1;
+      last = y;
+    }
+  }
+}
+
+/** Number of 4-connected foreground components larger than minSize pixels. */
+export function countComponents(mask, w, h, minSize = 20) {
+  const label = new Int32Array(w * h), stack = new Int32Array(w * h);
+  let next = 0, big = 0;
+  for (let i = 0; i < w * h; i++) {
+    if (!mask[i] || label[i]) continue;
+    next++; let sp = 0, size = 0; stack[sp++] = i; label[i] = next;
+    while (sp) {
+      const p = stack[--sp]; size++;
+      const x = p % w, y = (p / w) | 0;
+      if (x > 0 && mask[p - 1] && !label[p - 1]) { label[p - 1] = next; stack[sp++] = p - 1; }
+      if (x < w - 1 && mask[p + 1] && !label[p + 1]) { label[p + 1] = next; stack[sp++] = p + 1; }
+      if (y > 0 && mask[p - w] && !label[p - w]) { label[p - w] = next; stack[sp++] = p - w; }
+      if (y < h - 1 && mask[p + w] && !label[p + w]) { label[p + w] = next; stack[sp++] = p + w; }
+    }
+    if (size >= minSize) big++;
+  }
+  return big;
 }
 
 function keepLargestComponent(mask, w, h) {
@@ -203,4 +267,36 @@ export class Silhouette {
     }
     return null;
   }
+}
+
+/**
+ * Split a turnaround sheet (front, side and back side by side in one image)
+ * into three images. Columns are separated where the background shows from
+ * top to bottom; the three widest figure columns are kept, left to right.
+ */
+export function splitTurnaround(img) {
+  const { width: w, height: h, data } = img;
+  const mask = new Uint8Array(w * h);
+  floodBackground(img, mask);
+  const col = new Int32Array(w);
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) col[x] += mask[y * w + x];
+  const minOn = Math.max(2, h * 0.004);
+  const runs = [];
+  let s = -1;
+  for (let x = 0; x <= w; x++) {
+    const on = x < w && col[x] >= minOn;
+    if (on && s < 0) s = x;
+    else if (!on && s >= 0) { runs.push([s, x - 1]); s = -1; }
+  }
+  const big = runs.filter((r) => r[1] - r[0] > w * 0.04).sort((a, b) => (b[1] - b[0]) - (a[1] - a[0])).slice(0, 3).sort((a, b) => a[0] - b[0]);
+  if (big.length < 3) throw new Error('Could not find three figures (front, side, back) in the sheet.');
+  // Cut halfway between neighbouring figures.
+  const cuts = [0, ((big[0][1] + big[1][0]) / 2) | 0, ((big[1][1] + big[2][0]) / 2) | 0, w];
+  return ['front', 'side', 'back'].reduce((out, name, i) => {
+    const x0 = cuts[i], x1 = cuts[i + 1], cw = x1 - x0;
+    const d = new Uint8ClampedArray(cw * h * 4);
+    for (let y = 0; y < h; y++) d.set(data.subarray((y * w + x0) * 4, (y * w + x1) * 4), y * cw * 4);
+    out[name] = { width: cw, height: h, data: d };
+    return out;
+  }, {});
 }

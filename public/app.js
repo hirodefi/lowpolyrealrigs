@@ -4,8 +4,8 @@ import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { generateCharacter } from './core/pipeline.js';
 import { analyzeImage } from './core/silhouette.js';
 import { sampleImages } from './core/samples.js';
+import { toAnalysisImage } from './image-input.js';
 
-const MAX_PX = 400; // analysis resolution - plenty for silhouettes, keeps everything ~instant
 const $ = (s) => document.querySelector(s);
 const images = { front: null, side: null, back: null };
 let lastGLB = null, lastFront = null;
@@ -26,12 +26,7 @@ for (const slot of document.querySelectorAll('.slot')) {
 
 async function loadFile(view, file) {
   try {
-    const bmp = await createImageBitmap(file);
-    const scale = Math.min(1, MAX_PX / Math.max(bmp.width, bmp.height));
-    const c = new OffscreenCanvas(Math.round(bmp.width * scale), Math.round(bmp.height * scale));
-    const ctx = c.getContext('2d', { willReadFrequently: true });
-    ctx.drawImage(bmp, 0, 0, c.width, c.height);
-    setImage(view, ctx.getImageData(0, 0, c.width, c.height));
+    setImage(view, await toAnalysisImage(file));
   } catch (e) {
     status(`Could not read that image: ${e.message}`, true);
   }

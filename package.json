@@ -6,7 +6,9 @@
   "scripts": {
     "start": "node server.js",
     "test": "node test/selftest.js",
-    "test:e2e": "node test/e2e.js"
+    "test:e2e": "node test/e2e.js",
+    "bench": "node test/benchmark.js",
+    "fidelity": "node test/fidelity.js"
   },
   "dependencies": {
     "three": "0.169.0"

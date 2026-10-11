@@ -48,13 +48,46 @@ export function measureBody(front, side, back, opts = {}) {
 
   // --- Crotch: walk up from the shins while there is a gap between the legs.
   // A gap that only opens far below the hips is the hem of a skirt, not the crotch.
+  // The gap is tracked row by row (it need not sit exactly under the head centre:
+  // parted hair or a tilted head shift that column by a few pixels).
   let crotchV = 0.52, skirtHemV = null;
-  const gapAt = (v) => { const y = F.rowAt(v); return !F.on(cx - 1, y) && !F.on(cx, y) && !F.on(cx + 1, y); };
-  if (gapAt(0.88)) {
+  const gapNear = (v, near) => {
+    const row = F.runs[F.rowAt(v)];
+    let best = null;
+    for (let i = 0; i + 1 < row.length; i++) {
+      const g0 = row[i][1] + 1, g1 = row[i + 1][0] - 1, gc = (g0 + g1) / 2;
+      if (g1 < g0 || Math.abs(gc - near) > Hp * 0.03) continue;
+      if (!best || Math.abs(gc - near) < Math.abs(best - near)) best = gc;
+    }
+    return best;
+  };
+  let gapX = gapNear(0.88, cx);
+  if (gapX != null) {
     let v = 0.88;
-    while (v > 0.38 && gapAt(v - 0.003)) v -= 0.003;
-    if (v > 0.6) { skirtHemV = v; detected.crotch = false; notes.push('skirt or dress detected'); }
-    else crotchV = v;
+    for (;;) {
+      if (v <= 0.38) break;
+      let g = gapNear(v - 0.003, gapX);
+      if (g == null) {
+        // Knees (or calves) touching close the gap briefly: look a little higher.
+        let skip = 0.006;
+        for (; skip <= 0.05 && g == null; skip += 0.003) g = gapNear(v - skip, gapX);
+        if (g == null) break;
+        v -= skip - 0.003;
+      }
+      gapX = g; v -= 0.003;
+    }
+    // Skirt or crotch? Below a skirt hem the legs sit well inside the hem's outer
+    // edges (a step inwards); below shorts/trousers the legs' outer edges carry on.
+    const above = F.runNear(F.rowAt(v - 0.012), gapX);
+    const below = F.runs[F.rowAt(Math.min(v + 0.025, 0.97))];
+    let left = null, right = null;
+    for (const r of below) { if (r[1] < gapX && (!left || r[1] > left[1])) left = r; if (r[0] > gapX && (!right || r[0] < right[0])) right = r; }
+    const step = above && left && right ? (right[1] - left[0] + 1) / (above[1] - above[0] + 1) : 1;
+    detected.legStep = +step.toFixed(3); detected.gapTopV = +v.toFixed(3);
+    if (step < 0.94 && v > 0.5) { skirtHemV = v; detected.crotch = false; notes.push('skirt or dress detected'); }
+    // The visible gap opens a little below the true crotch where the thighs
+    // meet; -0.01 of height is calibrated on the ground-truth benchmark.
+    else crotchV = v - 0.01;
   } else { notes.push('no gap between legs - long skirt, dress or robe?'); detected.crotch = false; skirtHemV = 'long'; }
   crotchV = clamp(crotchV, 0.42, 0.62);
 
@@ -97,14 +130,22 @@ export function measureBody(front, side, back, opts = {}) {
   for (const s of [-1, 1]) {
     const sx = cx + s * shoulderHalf * 0.82, sy = F.rowAt(shoulderV);
     let tip = null, best = 0, count = 0;
+    const rowSum = new Map(); // y -> [sum x, n] of arm pixels, for the axis fit
     const yEnd = F.rowAt(Math.min(crotchV + 0.3, 0.92));
     for (let y = F.rowAt(shoulderV - 0.03); y <= yEnd; y++) {
       const v = (y - F.bbox.y0) / (Hp - 1);
       let inner = torsoHalfPx(v) + 2;
       if (v > crotchV) { const r = legRun(v, s); if (r) inner = Math.max(inner, s > 0 ? r[1] - cx + 2 : cx - r[0] + 2); }
+      // The body core at this height = every run overlapping the central zone
+      // (torso, hips, legs). Arm pixels lie outside it - unless the core is so
+      // wide that the arms have merged into it (T-pose, arms against the sides).
+      let lo = Infinity, hi = -Infinity;
+      for (const r of F.runs[y]) if (r[1] >= cx - shoulderHalf * 0.6 && r[0] <= cx + shoulderHalf * 0.6) { lo = Math.min(lo, r[0]); hi = Math.max(hi, r[1]); }
+      if (hi >= lo && (hi - lo + 1) / 2 <= shoulderHalf * 1.25) inner = Math.max(inner, s > 0 ? hi - cx + 2 : cx - lo + 2);
       for (const r of F.runs[y]) for (let x = r[0]; x <= r[1]; x++) {
         if (s * (x - cx) <= inner) continue;
         count++;
+        const rs = rowSum.get(y) || [0, 0]; rs[0] += x; rs[1]++; rowSum.set(y, rs);
         const d = (x - sx) ** 2 + (y - sy) ** 2;
         if (d > best) { best = d; tip = [x, y]; }
       }
@@ -112,19 +153,57 @@ export function measureBody(front, side, back, opts = {}) {
     if (!tip || count < Hp * Hp * 0.002) { arms.push(null); continue; }
     const len = Math.sqrt(best);
     const dx = Math.abs(tip[0] - sx), dy = tip[1] - sy;
-    const angle = Math.atan2(dy, dx); // below horizontal
+    let angle = Math.atan2(dy, dx); // below horizontal (shoulder estimate -> tip)
+    // Better: fit a line through the arm's centre row by row (upper arm to wrist),
+    // which does not depend on where we guessed the shoulder joint to be.
+    // axisX(y): the arm's centre line in image pixels.
+    let axisX = (y) => sx + (tip[0] - sx) * ((y - sy) / (tip[1] - sy || 1));
+    {
+      const pts = [];
+      for (const [y, [sum, n]] of rowSum) if (n >= 2 && y > sy + Hp * 0.04 && y < tip[1] - Hp * 0.04) pts.push([y, sum / n]);
+      if (pts.length >= 8) {
+        const my = pts.reduce((a, p) => a + p[0], 0) / pts.length, mx = pts.reduce((a, p) => a + p[1], 0) / pts.length;
+        let num = 0, den = 0;
+        for (const [y, x] of pts) { num += (y - my) * (x - mx); den += (y - my) ** 2; }
+        const k = num / den; // dx per dy (signed)
+        angle = Math.atan2(1, Math.abs(k));
+        axisX = (y) => mx + k * (y - my);
+      }
+    }
+    // Points along the axis: t = 0 at shoulder height, 1 at the fingertip row.
+    const axisAt = (t) => { const y = sy + (tip[1] - sy) * t; return [axisX(y), y]; };
+    const [ax0, ay0] = axisAt(0), [ax1, ay1] = axisAt(1);
+    const alen = Math.hypot(ax1 - ax0, ay1 - ay0) || 1;
     // Thickness: march perpendicular to the arm axis.
-    const ux = (tip[0] - sx) / len, uy = (tip[1] - sy) / len;
+    const ux = (ax1 - ax0) / alen, uy = (ay1 - ay0) / alen;
     const thick = (t) => {
-      const px = sx + ux * len * t, py = sy + uy * len * t;
+      const [px, py] = axisAt(t);
       let a = 0, b = 0;
       while (a < Hp * 0.06 && F.on(px - uy * a, py + ux * a)) a++;
       while (b < Hp * 0.06 && F.on(px + uy * b, py - ux * b)) b++;
-      return a + b;
+      // Arms often touch the torso on the inner side: trust the outer half.
+      return 2 * Math.min(a, b);
     };
     // Colour along the arm axis (used to find where the sleeve ends).
-    const sample = (t) => F.sampleColor(sx + ux * len * t, sy + uy * len * t);
-    arms.push({ len, angle, upper: thick(0.28), fore: thick(0.62), hand: thick(0.9), sample });
+    const sample = (t) => { const [x, y] = axisAt(t); return F.sampleColor(x, y); };
+    (detected.armTips ??= []).push({ side: s, shoulder: [+((sx - cx) / Hp).toFixed(3), +((sy - F.bbox.y0) / Hp).toFixed(3)], tip: [+((tip[0] - cx) / Hp).toFixed(3), +((tip[1] - F.bbox.y0) / Hp).toFixed(3)] });
+    const upper = thick(0.28), fore = thick(0.62);
+    // Torso edge on this side at row y: walk from the arm's centre towards the
+    // body; past the arm-torso gap the next body pixel is the torso. If the arm
+    // touches the body there is no gap: use the arm's inner edge instead.
+    const torsoEdge = (y) => {
+      if (y < sy + Hp * 0.04 || y > tip[1] - Hp * 0.06) return null;
+      let x = Math.round(axisX(y));
+      const half = (y - sy) / (tip[1] - sy) < 0.45 ? upper / 2 : fore / 2;
+      const step = -s;
+      let i = 0;
+      while (i < Hp * 0.12 && F.on(x, y)) { x += step; i++; } // through the arm
+      const gapStart = x;
+      while (i < Hp * 0.2 && !F.on(x, y)) { x += step; i++; }  // across the gap
+      if (x === gapStart) return Math.abs(axisX(y) - cx) - half; // touching
+      return Math.abs(x - cx);
+    };
+    arms.push({ len, angle, upper, fore, hand: thick(0.9), sample, torsoEdge });
   }
   const good = arms.filter(Boolean);
   detected.arms = good.length;
@@ -132,10 +211,21 @@ export function measureBody(front, side, back, opts = {}) {
   const avg = (k, def) => good.length ? good.reduce((a, b) => a + b[k], 0) / good.length : def;
   const arm = {
     length: clamp(avg('len', Hp * 0.42), Hp * 0.3, Hp * 0.5) * mF,
-    angle: clamp(avg('angle', 50 * DEG), 0, 80 * DEG),
+    angle: clamp(avg('angle', 50 * DEG), 0, 88 * DEG),
     upper: clamp(avg('upper', Hp * 0.055), Hp * 0.03, Hp * 0.09) * mF,
     fore: clamp(avg('fore', Hp * 0.045), Hp * 0.025, Hp * 0.08) * mF,
     hand: clamp(avg('hand', Hp * 0.05), Hp * 0.03, Hp * 0.08) * mF,
+  };
+
+  // Torso half-width with the arms excluded: where an arm hangs close to the
+  // body the central run includes it, so cap it at the torso edge found beside
+  // each arm (median of both sides).
+  const torsoHalf = (v) => {
+    const base = torsoHalfPx(v), y = F.rowAt(v);
+    const edges = good.map((a) => a.torsoEdge(y)).filter((e) => e != null && e > 0);
+    if (!edges.length) return base;
+    edges.sort((a, b) => a - b);
+    return Math.min(base, edges[edges.length >> 1] + 1);
   };
 
   // --- Side view: depth profile. Feet point forward, which tells us facing.
@@ -169,7 +259,7 @@ export function measureBody(front, side, back, opts = {}) {
   // Torso cross-section at height y (metres): half width x, front z, back z.
   const torsoAt = (y) => {
     const v = V(y);
-    const hx = torsoHalfPx(v) * mF;
+    const hx = torsoHalf(v) * mF;
     const d = depthAt(v);
     if (d && d.zf - d.zb > 0.02 * H) {
       // In profile, a hanging arm overlaps the chest; cap the depth to something sane.
@@ -206,7 +296,24 @@ export function measureBody(front, side, back, opts = {}) {
 
   const crotchY = Y(crotchV);
   const shoulderY = Y(shoulderV);
+  // Shape features for classifying the body (normalised, pose-independent):
+  // waist/hip width (front), chest/waist depth (side = bust), head height ratio.
+  const shape = (() => {
+    let waist = Infinity, waistV = shoulderV + 0.15, hip = 0;
+    for (let v = shoulderV + 0.1; v <= crotchV - 0.06; v += 0.005) { const w = torsoHalf(v); if (w < waist) { waist = w; waistV = v; } }
+    for (let v = waistV; v <= crotchV - 0.005; v += 0.005) hip = Math.max(hip, torsoHalf(v));
+    let bust = null;
+    if (sideInfo) {
+      const dep = (v) => { const d = depthAt(v); return d ? d.zf - d.zb : null; };
+      let chest = 0, wd = Infinity;
+      for (let v = shoulderV + 0.03; v <= shoulderV + 0.12; v += 0.005) chest = Math.max(chest, dep(v) ?? 0);
+      for (let v = waistV - 0.03; v <= waistV + 0.03; v += 0.005) { const d = dep(v); if (d) wd = Math.min(wd, d); }
+      if (chest && isFinite(wd)) bust = chest / wd;
+    }
+    return { waistHip: waist / Math.max(hip, 1), hipShoulder: hip / shoulderHalf, bust, head: detected.neck ? neckV : null };
+  })();
   const spec = {
+    shape,
     height: H,
     tpose,
     notes,
@@ -229,11 +336,27 @@ export function measureBody(front, side, back, opts = {}) {
 
   // Flat colours per body part + clothing boundaries, read off the photos.
   spec.look = measureLook({ F, cx, mF, H, back, spec, neckV, shoulderV, crotchV, arms: good, shoulderHalf, neckW, skirtHemV });
+  spec.look.heels = side ? detectHeels(side) : false;
+  if (spec.look.heels) notes.push('heels detected');
   return spec;
 }
 
 // Average colour over a rectangle of masked pixels (image px). null if empty.
 function regionColor(S, x0, y0, x1, y1) {
+  const { data } = S.img;
+  let r = 0, g = 0, b = 0, n = 0, edge = 0;
+  for (let y = Math.max(0, Math.floor(y0)); y <= Math.min(S.h - 1, Math.ceil(y1)); y++)
+    for (let x = Math.max(0, Math.floor(x0)); x <= Math.min(S.w - 1, Math.ceil(x1)); x++) {
+      if (!S.mask[y * S.w + x]) continue;
+      // Skip edge pixels: anti-aliasing blends them with the backdrop.
+      if (!S.on(x - 2, y) || !S.on(x + 2, y) || !S.on(x, y - 2) || !S.on(x, y + 2)) { edge++; continue; }
+      const i = (y * S.w + x) * 4;
+      r += data[i]; g += data[i + 1]; b += data[i + 2]; n++;
+    }
+  if (!n && edge) return regionColorAll(S, x0, y0, x1, y1); // thin region: use what there is
+  return n ? [r / n, g / n, b / n] : null;
+}
+function regionColorAll(S, x0, y0, x1, y1) {
   const { data } = S.img;
   let r = 0, g = 0, b = 0, n = 0;
   for (let y = Math.max(0, Math.floor(y0)); y <= Math.min(S.h - 1, Math.ceil(y1)); y++)
@@ -250,6 +373,28 @@ const cdist = (a, b) => Math.sqrt((a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2 + (a[2
  * One clean colour per part (Skin, Hair, Top, Bottom, Shoes) and where the
  * clothes end: hem height, sleeve length, trouser length and hair coverage.
  */
+/**
+ * Heels: in profile, a heel is a narrow post standing under the back of the
+ * shoe for several rows above the floor; flat shoes have a continuous sole.
+ */
+function detectHeels(S) {
+  const maxW = Math.max(2, S.heightPx * 0.012);
+  const posts = new Map(); // x bucket -> consecutive rows seen
+  let best = 0;
+  for (let v = 0.96; v <= 0.996; v += 0.004) {
+    const row = S.runs[S.rowAt(v)];
+    const seen = new Set();
+    for (const r of row) {
+      if (r[1] - r[0] + 1 > maxW) continue;
+      const key = Math.round((r[0] + r[1]) / 2 / 3);
+      const n = Math.max(posts.get(key) || 0, posts.get(key - 1) || 0, posts.get(key + 1) || 0) + 1;
+      seen.add(key); posts.set(key, n); best = Math.max(best, n);
+    }
+    for (const k of [...posts.keys()]) if (!seen.has(k)) posts.delete(k);
+  }
+  return best >= 5;
+}
+
 function measureLook({ F, cx, H, back, spec, neckV, shoulderV, crotchV, arms, shoulderHalf, neckW, skirtHemV }) {
   const Hp = F.heightPx;
   const px = (v) => F.rowAt(v);
@@ -262,9 +407,15 @@ function measureLook({ F, cx, H, back, spec, neckV, shoulderV, crotchV, arms, sh
   const hair = regionColor(F, cx - headHalf * 0.5, hv(0.02), cx + headHalf * 0.5, hv(0.15)) || skinFace || [80, 60, 40];
   let skin = skinFace || [225, 180, 140];
   const hands = []; // hand colours are a second skin sample
-  const top = regionColor(F, cx - shoulderHalf * 0.4, px(shoulderV + 0.05), cx + shoulderHalf * 0.4, px(shoulderV + 0.13)) || [120, 120, 130];
+  let top = regionColor(F, cx - shoulderHalf * 0.4, px(shoulderV + 0.05), cx + shoulderHalf * 0.4, px(shoulderV + 0.13)) || [120, 120, 130];
   const legMid = F.runNear(px(crotchV + 0.12), cx + shoulderHalf * 0.45);
   let bottom = (legMid && regionColor(F, legMid[0] + 2, px(crotchV + 0.08), legMid[1] - 2, px(crotchV + 0.2))) || [60, 70, 100];
+  // Prefer the hip band just above the crotch: it is the trousers/shorts/skirt
+  // whatever their length (short shorts leave the thighs bare).
+  {
+    const hip = regionColor(F, cx - shoulderHalf * 0.45, px(crotchV - 0.035), cx + shoulderHalf * 0.45, px(crotchV - 0.008));
+    if (hip && skirtHemV == null) bottom = hip;
+  }
   if (typeof skirtHemV === 'number') { // short skirt: sample between the hips and the hem
     const c = regionColor(F, cx - shoulderHalf * 0.4, px(Math.min(skirtHemV - 0.06, 0.55)), cx + shoulderHalf * 0.4, px(skirtHemV - 0.02));
     if (c) bottom = c;
@@ -304,7 +455,8 @@ function measureLook({ F, cx, H, back, spec, neckV, shoulderV, crotchV, arms, sh
       if (isSkin && hit == null) hit = t;
       else if (!isSkin) hit = null; // must stay skin all the way to the wrist
     }
-    if (hit != null) sleeveT = Math.min(sleeveT, clamp(hit, 0.05, 1));
+    // Skin from the very first sample on = sleeveless.
+    if (hit != null) sleeveT = Math.min(sleeveT, hit <= 0.15 ? 0 : clamp(hit, 0.05, 1));
     const hc = a.sample(0.9);
     if (hc && cdist(hc, skin) < 70) hands.push(hc);
   }
@@ -357,19 +509,49 @@ function measureLook({ F, cx, H, back, spec, neckV, shoulderV, crotchV, arms, sh
   const isHairC = (c) => c && cdist(c, hair) < 0.75 * Math.min(cdist(c, skin), cdist(c, top));
   let hairEndV = null;
   if (hasHair) {
+    let misses = 0; // dark hair in shadow can drop out of the mask for a row or two
     for (let v = neckV; v <= 0.55; v += 0.01) {
       let hairy;
       if (back) {
         const bcx = (back.bbox.x0 + back.bbox.x1) / 2, bw = headHalf * (back.heightPx / F.heightPx) * 0.5;
-        hairy = isHairC(regionColor(back, bcx - bw, back.rowAt(v), bcx + bw, back.rowAt(v + 0.01)));
+        const c = regionColor(back, bcx - bw, back.rowAt(v), bcx + bw, back.rowAt(v + 0.01));
+        if (!c && ++misses <= 3) continue;
+        hairy = isHairC(c);
       } else {
         const inner = neckW + 2, outer = headHalf * 1.25;
         if (outer <= inner + 1) break;
         hairy = [-1, 1].some((sd) => isHairC(regionColor(F, cx + sd * inner, px(v), cx + sd * outer, px(v + 0.01))));
       }
-      if (hairy) hairEndV = v + 0.01; else break;
+      if (hairy) { hairEndV = v + 0.01; misses = 0; } else break;
     }
   }
+  // Hair style from length AND width (back view when available): a bob hangs as
+  // wide as the head; short hair narrows to the nape; a ponytail is a narrow
+  // band down the back; long hair is a wide curtain.
+  let hairStyle = null;
+  {
+    const S = back || F;
+    const sc = S.heightPx / F.heightPx;
+    const scx = back ? (back.bbox.x0 + back.bbox.x1) / 2 : cx;
+    const headW = headHalf * 2 * sc;
+    const pixHair = (x, y) => { if (!S.on(x, y)) return false; const i = (Math.round(y) * S.w + Math.round(x)) * 4, d = S.img.data; return isHairC([d[i], d[i + 1], d[i + 2]]); };
+    const hairWidth = (v) => { // contiguous hair span around the centre column, as a fraction of head width
+      const y = S.rowAt(v);
+      let l = scx, r = scx, miss = 0;
+      if (!pixHair(scx, y)) return 0;
+      while (l > 0 && miss < 2) { l--; miss = pixHair(l, y) ? 0 : miss + 1; }
+      miss = 0;
+      while (r < S.w - 1 && miss < 2) { r++; miss = pixHair(r, y) ? 0 : miss + 1; }
+      return (r - l - 3) / headW;
+    };
+    if (!hasHair) hairStyle = 'bald';
+    else if (back && hairEndV != null && hairEndV > shoulderV + 0.02) hairStyle = hairWidth(shoulderV + 0.03) < 0.45 ? 'ponytail' : 'long';
+    else if (!back && hairEndV != null && hairEndV > shoulderV + 0.02) hairStyle = 'long';
+    else if (back && hairEndV != null && hairWidth(neckV + 0.005) >= 0.7) hairStyle = 'bob';
+    else if (!back && hairEndV != null && hairEndV > neckV + 0.035) hairStyle = 'bob';
+    else hairStyle = 'short';
+  }
+
   // Skirt hem: a short skirt's hem came from the leg gap; for a long one walk
   // down the centre line until the colour stops looking like the skirt.
   let skirtY = null;
@@ -383,12 +565,40 @@ function measureLook({ F, cx, H, back, spec, neckV, shoulderV, crotchV, arms, sh
     skirtY = H * (1 - clamp(v, 0.62, 0.95));
   }
 
+  // Neckline: walking down the chest centre from the chin, where does the top
+  // start? Deep = scoop/tank; at the neck = crew or collar. The most distinct
+  // colour right at that edge (trim, collar, tie) becomes the accent.
+  let necklineV = neckV, accent = null;
+  {
+    const pix = (v) => regionColor(F, cx - 1, px(v), cx + 1, px(v));
+    for (let v = neckV; v <= shoulderV + 0.12; v += 0.004) {
+      const c = pix(v);
+      if (c && cdist(c, top) < cdist(c, skin) - 10) { necklineV = v; break; }
+    }
+    // The top's real colour: just below the neckline, away from skin and arms.
+    const t2 = regionColor(F, cx - shoulderHalf * 0.3, px(necklineV + 0.03), cx + shoulderHalf * 0.3, px(necklineV + 0.09));
+    if (t2) top = t2;
+    // Accent: a colour distinct from skin and top that holds for two samples
+    // (single bright pixels are highlights, not trim).
+    let bestD = 0;
+    for (let v = necklineV - 0.012; v <= necklineV + 0.02; v += 0.002) {
+      const c = pix(v), n = [pix(v - 0.002), pix(v + 0.002)].filter((q) => q && cdist(c || q, q) <= 35)[0];
+      if (!c || !n) continue;
+      const d = Math.min(cdist(c, skin), cdist(c, top));
+      if (d > bestD) { bestD = d; accent = c.map((x, i) => (x + n[i]) / 2); }
+    }
+    if (bestD < 80) accent = null;
+  }
+
   const color = (c) => c.map((x) => Math.round(clamp(x, 0, 255)));
   return {
     skin: color(skin), hair: color(hair), top: color(top), bottom: color(bottom), shoes: color(shoes),
     hemY: H * (1 - hemV), sleeveT, trouserT,
     hasHair, hairlineY: H * (1 - hairlineV), hairBackY: H * (1 - hairBackV),
     hairEndY: hairEndV == null ? null : H * (1 - hairEndV),
+    hairStyle,
+    necklineY: H * (1 - necklineV),
+    accent: accent ? color(accent) : null,
     skirtY,
   };
 }

@@ -163,6 +163,7 @@ class MeshBuilder {
 /** Hair style from the photo: none, short cap, bob to the jaw/neck, or long down the back. */
 function pickHairStyle(opt, look, H, pos, shoulderY) {
   if (opt && opt !== 'auto') return opt;
+  if (look.hairStyle) return look.hairStyle;
   if (!look.hasHair) return 'bald';
   if (look.hairEndY != null && look.hairEndY < shoulderY - 0.01 * H) return 'long';
   if (look.hairEndY != null) return 'bob';
@@ -171,11 +172,14 @@ function pickHairStyle(opt, look, H, pos, shoulderY) {
 
 /** Pick a template body type from the photo proportions. */
 export function pickBodyType(spec) {
-  const H = spec.height;
-  if (spec.detected?.neck && (H - spec.neckY) / H > 0.195) return 'child';
-  // Hip width relative to shoulder width: women's templates carry wider hips.
-  const hip = spec.torsoAt(spec.crotchY + 0.04 * H).hx, sh = spec.shoulderX / 0.82;
-  return hip / sh > 0.86 ? 'female' : 'male';
+  // Calibrated on the ground-truth benchmark: head height (neck at > 17% of the
+  // height from the top) marks a child; a waist much narrower than the hips or
+  // a pronounced bust in profile marks a woman.
+  const sh = spec.shape || {};
+  if (sh.head != null && sh.head > 0.17) return 'child';
+  if (sh.waistHip != null && sh.waistHip < 0.78) return 'female';
+  if (sh.bust != null && sh.bust > 1.1) return 'female';
+  return 'male';
 }
 
 /**
@@ -195,8 +199,12 @@ export function buildCharacter(spec, opts = {}) {
   // ---------- vertical mapping: template height fraction -> metres ----------
   // Photo landmarks win where they were clearly detected (within sane limits).
   const neckMidT = (L.neck + L.head) / 2; // narrowest point of the neck
-  const crotchP = spec.detected?.crotch ? clamp(spec.crotchY / H, L.crotch - 0.06, L.crotch + 0.06) : L.crotch;
-  const neckP = spec.detected?.neck ? clamp(spec.neckY / H, neckMidT - 0.04, neckMidT + 0.04) : neckMidT;
+  // proportions: 'template' ignores the photo's landmarks and widths (basic mode,
+  // and ground-truth characters for the benchmark); the photo still sets pose,
+  // clothing and colours.
+  const TP = opts.proportions === 'template';
+  const crotchP = !TP && spec.detected?.crotch ? clamp(spec.crotchY / H, L.crotch - 0.06, L.crotch + 0.06) : L.crotch;
+  const neckP = !TP && spec.detected?.neck ? clamp(spec.neckY / H, neckMidT - 0.04, neckMidT + 0.04) : neckMidT;
   const KEYS = [[0, 0], [L.crotch, crotchP], [neckMidT, neckP], [1, 1]];
   const Y = (yt) => {
     for (let i = 0; i + 1 < KEYS.length; i++) if (yt <= KEYS[i + 1][0]) return H * lerp(KEYS[i][1], KEYS[i + 1][1], (yt - KEYS[i][0]) / (KEYS[i + 1][0] - KEYS[i][0]));
@@ -210,13 +218,16 @@ export function buildCharacter(spec, opts = {}) {
   const TU = Array.from({ length: 15 }, (_, i) => i / 14);
   // Photos personalise the build, but within human limits (drawings and loose
   // clothing would otherwise produce cartoon proportions).
-  const shFactor = clamp(spec.shoulderX / (0.82 * L.shoulder[0] * H), 0.88, 1.15);
-  const torsoW = smooth(TU.map((u) => {
+  // Compare like with like: the photo gives the OUTER shoulder half-width
+  // (deltoids included); the template's equivalent is joint + arm radius.
+  const shFactor = TP ? 1 : clamp((spec.shoulderX / 0.82) / ((L.shoulder[0] + stations(T.arm)(0.2).hw) * H), 0.78, 1.15);
+  const ones = (n) => new Array(n).fill(1);
+  const torsoW = TP ? ones(15).map((f) => f * (P.width ?? 1)) : smooth(TU.map((u) => {
     const yt = torsoY(u);
     if (yt > L.armpit - 0.02) return shFactor; // photo widths near the shoulders include the arms
     return spec.torsoAt(Y(yt)).hx / (torsoS(u).hw * H);
   }), 0.85, 1.2).map((f) => f * (P.width ?? 1));
-  const torsoD = smooth(TU.map((u) => {
+  const torsoD = TP ? ones(15).map((f) => f * (P.width ?? 1)) : smooth(TU.map((u) => {
     if (!hasSide) return 1;
     const t = spec.torsoAt(Y(torsoY(u)));
     return (t.zf - t.zb) / 2 / (torsoS(u).hd * H);
@@ -224,13 +235,21 @@ export function buildCharacter(spec, opts = {}) {
 
   const legY = (u) => lerp(L.crotch, L.ankle[1], u);
   const LU = Array.from({ length: 13 }, (_, i) => i / 12);
-  const legW = smooth(LU.map((u) => spec.legAtY(Y(legY(u))).hx / (legS(u).hw * H)), 0.85, 1.2).map((f) => f * (P.limb ?? 1));
-  const legD = smooth(LU.map((u) => {
+  const legW = TP ? ones(13).map((f) => f * (P.limb ?? 1)) : smooth(LU.map((u) => spec.legAtY(Y(legY(u))).hx / (legS(u).hw * H)), 0.85, 1.2).map((f) => f * (P.limb ?? 1));
+  const legD = TP ? ones(13).map((f) => f * (P.limb ?? 1)) : smooth(LU.map((u) => {
     if (!hasSide) return 1;
     const l = spec.legAtY(Y(legY(u)));
     return (l.zf - l.zb) / 2 / (legS(u).hd * H);
   }), 0.85, 1.2).map((f) => f * (P.limb ?? 1));
   const hipW = lookup(torsoW, (L.hip - L.crotch) / (L.neck - L.crotch));
+  // Leg centre line (|x|) at leg station u: measured from the front view where
+  // the legs are visible, template otherwise (bounded to stay anatomical).
+  const legCX = (u) => {
+    const t = legS(clamp(u, 0, 1)).cx * H * hipW;
+    if (TP) return t;
+    const m = spec.legAtY(Y(lerp(L.crotch, L.ankle[1], clamp(u, 0.04, 1)))).off;
+    return clamp(m, t * 0.6, t * 1.3);
+  };
 
   // Head: one width factor from the widest part, one depth factor from the side.
   let headMaxT = 0, headMaxP = 0, headDT = 0, headDP = 0;
@@ -239,18 +258,25 @@ export function buildCharacter(spec, opts = {}) {
     headMaxT = Math.max(headMaxT, s.hw * H); headMaxP = Math.max(headMaxP, h.hx);
     headDT = Math.max(headDT, s.hd * H); headDP = Math.max(headDP, (h.zf - h.zb) / 2);
   }
-  const fh = clamp(headMaxP / headMaxT, 0.9, 1.12);
-  const fhd = hasSide ? clamp(headDP / headDT, 0.9, 1.12) : fh;
+  const fh = TP ? 1 : clamp(headMaxP / headMaxT, 0.9, 1.12);
+  const fhd = TP ? 1 : hasSide ? clamp(headDP / headDT, 0.9, 1.12) : fh;
 
   // Arms: thickness from the front view, length and angle from the pose.
   const armLenT = (L.fingertip - L.shoulder[0]) * H;
   const A = spec.arm;
-  const fa = clamp(((A.upper / 2) / (armS(0.25).hw * H) + (A.fore / 2) / (armS(0.6).hw * H)) / 2, 0.85, 1.2) * (P.limb ?? 1);
-  const armLen = armLenT * (spec.detected?.arms ? clamp(A.length / armLenT, 0.88, 1.12) : 1);
-  const angle = clamp(A.angle, 0, 80 * Math.PI / 180);
+  const fa = TP ? (P.limb ?? 1) : clamp(((A.upper / 2) / (armS(0.25).hw * H) + (A.fore / 2) / (armS(0.6).hw * H)) / 2, 0.85, 1.2) * (P.limb ?? 1);
+  const armLen = armLenT * (!TP && spec.detected?.arms ? clamp(A.length / armLenT, 0.88, 1.12) : 1);
+  const angle = clamp(A.angle, 0, 88 * Math.PI / 180);
   const elbowU = (L.elbow[0] - L.shoulder[0]) / (L.fingertip - L.shoulder[0]);
   const wristU = (L.wrist[0] - L.shoulder[0]) / (L.fingertip - L.shoulder[0]);
   const kneeU = (L.crotch - L.knee[1]) / (L.crotch - L.ankle[1]);
+
+  // Body-type shaping that reads at crowd distance: women get a narrower waist,
+  // fuller hips and a bust; men a broader chest and shoulders.
+  const g = (u, m, sd) => Math.exp(-(((u - m) / sd) ** 2));
+  const female = bodyType === 'female', male = bodyType === 'male';
+  const widthMod = (u) => female ? 1 - 0.09 * g(u, 0.38, 0.1) + 0.08 * g(u, 0.05, 0.09) : male ? 1 + 0.05 * g(u, 0.8, 0.12) - 0.02 * g(u, 0.08, 0.1) : 1;
+  const bustMod = (u) => (female ? 0.13 * g(u, 0.72, 0.07) : male ? 0.04 * g(u, 0.74, 0.1) : 0);
 
   // ---------- skeleton (world positions, identity bind rotations) ----------
   const tuOf = (yt) => (yt - L.crotch) / (L.neck - L.crotch);
@@ -262,7 +288,13 @@ export function buildCharacter(spec, opts = {}) {
   pos.Chest = [0, Y(L.chest), torsoS(tuOf(L.chest)).cz * H];
   pos.Neck = [0, Y(L.neck), torsoS(1).cz * H];
   pos.Head = [0, Y(L.head), headS((L.head - L.neck) / (1 - L.neck)).cz * H];
-  const shX = L.shoulder[0] * H * shFactor * (P.width ?? 1);
+  // Anchor the arm to the torso actually built: the shoulder joint sits so the
+  // arm root overlaps the torso's real half-width at armpit height. A template
+  // joint further out leaves a see-through gap between arm and body.
+  const armpitU = (L.armpit - L.crotch) / (L.neck - L.crotch);
+  const torsoAtArmpit = torsoS(armpitU).hw * H * lookup(torsoW, armpitU) * widthMod(armpitU);
+  const armRootR = armS(0.2).hw * H * fa;
+  const shX = Math.min(L.shoulder[0] * H * shFactor * (P.width ?? 1), torsoAtArmpit + armRootR * 0.45);
   const arms = {};
   for (const [side, s] of [['Left', 1], ['Right', -1]]) {
     // The reference rig's shoulder joint sits high (clavicle height); drop it a
@@ -276,8 +308,8 @@ export function buildCharacter(spec, opts = {}) {
     pos[side + 'LowerArm'] = add(sh, mul(dir, armLen * elbowU));
     pos[side + 'Hand'] = add(sh, mul(dir, armLen * wristU));
 
-    const legX = (u) => s * legS(u).cx * H * hipW;
-    pos[side + 'UpperLeg'] = [s * L.hipJoint[0] * H * hipW, hipYm, L.hipJoint[2] * H];
+    const legX = (u) => s * legCX(u);
+    pos[side + 'UpperLeg'] = [s * Math.min(L.hipJoint[0] * H * hipW, legCX(0.06) * 1.05), hipYm, L.hipJoint[2] * H];
     pos[side + 'LowerLeg'] = [legX(kneeU), Y(L.knee[1]), L.knee[2] * H];
     pos[side + 'Foot'] = [legX(1), Y(L.ankle[1]), L.ankle[2] * H];
     pos[side + 'Toes'] = [legX(1), Y(0.012), L.ball * H];
@@ -301,10 +333,6 @@ export function buildCharacter(spec, opts = {}) {
     const capX = shX + armS(0.2).hw * H * fa * 0.45;
     // Body-type shaping that reads at crowd distance: women get a narrower waist,
     // fuller hips and a bust; men a broader chest and shoulders.
-    const g = (u, m, sd) => Math.exp(-(((u - m) / sd) ** 2));
-    const female = bodyType === 'female', male = bodyType === 'male';
-    const widthMod = (u) => female ? 1 - 0.09 * g(u, 0.38, 0.1) + 0.08 * g(u, 0.05, 0.09) : male ? 1 + 0.05 * g(u, 0.8, 0.12) - 0.02 * g(u, 0.08, 0.1) : 1;
-    const bustMod = (u) => (female ? 0.13 * g(u, 0.72, 0.07) : male ? 0.04 * g(u, 0.74, 0.1) : 0);
     const pushRing = (u, scale, y = Y(torsoY(u))) => {
       const s = torsoS(u);
       const w = weightsAlong(y, [['Hips', pos.Spine[1] - 0.01 * H], ['Spine', pos.Chest[1]], ['Chest', pos.Neck[1] - 0.012 * H], ['Neck', Infinity]], 0.03 * H);
@@ -398,7 +426,8 @@ export function buildCharacter(spec, opts = {}) {
     const zf = s.cz * H + s.hd * H * fhd * shapeAt(s.shape, Math.PI / 2);
     const nw = 0.011 * H, nh = 0.03 * H, np = 0.016 * H;
     mb.mat = () => 'Skin';
-    mb.spike([[-nw, y - nh * 0.35, zf - 0.006 * H], [0, y + nh * 0.65, zf - 0.004 * H], [nw, y - nh * 0.35, zf - 0.006 * H]], [0, y - nh * 0.25, zf + np], W);
+    // Base sunk well into the face so the wedge never floats off it in profile.
+    mb.spike([[-nw, y - nh * 0.35, zf - 0.016 * H], [0, y + nh * 0.65, zf - 0.014 * H], [nw, y - nh * 0.35, zf - 0.016 * H]], [0, y - nh * 0.25, zf + np], W);
     const eu = invert(headYofU, Y(lerp(L.head, 1, 0.32)));
     const es = headS(eu), ey = headYofU(eu);
     for (const sx of hairStyle === 'bob' || hairStyle === 'long' ? [] : [1, -1]) {
@@ -492,7 +521,7 @@ export function buildCharacter(spec, opts = {}) {
     const { sh, dir, uA } = arms[side];
     const sleeveEnd = Math.min(look.sleeveT, 1) * wristU; // fraction of the full arm length
     const segs = [[side + 'Shoulder', 0.02], [side + 'UpperArm', elbowU], [side + 'LowerArm', wristU], [side + 'Hand', Infinity]];
-    const AU = [...new Set([-0.06, 0.06, 0.13, 0.2, 0.27, 0.34, elbowU - 0.04, elbowU, elbowU + 0.05, 0.58, 0.66, 0.74, wristU - 0.03, wristU, wristU + 0.03, 0.87, 0.93, 0.962])].sort((a, b) => a - b);
+    const AU = [...new Set([-0.14, -0.06, 0.06, 0.13, 0.2, 0.27, 0.34, elbowU - 0.04, elbowU, elbowU + 0.05, 0.58, 0.66, 0.74, wristU - 0.03, wristU, wristU + 0.03, 0.87, 0.93, 0.962])].sort((a, b) => a - b);
     const rings = [];
     // Near the joint the T-pose slice also cuts the torso side: cap the root
     // rings at the deltoid size so the shoulder stays round.
@@ -507,17 +536,17 @@ export function buildCharacter(spec, opts = {}) {
       // Fingers curl slightly towards the palm (palm = -uA).
       const curl = u > wristU + 0.04 ? -0.02 * H * ((u - wristU - 0.04) / (1 - wristU - 0.04)) ** 2 : 0;
       const c = add(add(sh, mul(dir, armLen * u)), mul(uA, (s.cx - L.shoulder[1]) * H + curl));
-      const flat = u < 0.2 ? lerp(0.82, 1, clamp(u / 0.2, 0, 1)) : 1; // flatter top at the arm root
+      const flat = u < 0.2 ? lerp(0.9, 1, clamp(u / 0.2, 0, 1)) : 1; // flatter top at the arm root
       rings.push({ c: add(c, [0, 0, (s.cz - L.shoulder[2]) * H]), u: uA, v: [0, 0, 1], rx: s.hw * H * f * scale * flat, ry: s.hd * H * f * scale, shape: s.shape, w: weightsAlong(u, segs, 0.035) });
     };
     let cuffDone = sleeveEnd >= 0.985;
     for (const u of AU) {
       if (!cuffDone && u > sleeveEnd) { ring(sleeveEnd, LIP); ring(sleeveEnd + 0.006, 1); cuffDone = true; }
       // The root ring is buried in the torso: keep it small so it can't poke out.
-      ring(u, u < 0 ? 0.7 : u > 0.95 ? 0.72 : u <= sleeveEnd ? LOOSE : 1); // blunt fingertips
+      ring(u, u < -0.1 ? 0.75 : u < 0 ? 0.92 : u > 0.95 ? 0.72 : u <= sleeveEnd ? LOOSE : 1); // blunt fingertips
     }
     mb.mat = (c) => (dot(sub(c, sh), dir) / armLen <= sleeveEnd + 0.003 ? 'Top' : 'Skin');
-    mb.tube(rings, D.limb, add(sh, mul(dir, -armLen * 0.075)), add(add(sh, mul(dir, armLen * 0.972)), mul(uA, -0.018 * H))); // rounded mitten tip
+    mb.tube(rings, D.limb, add(sh, mul(dir, -armLen * 0.16)), add(add(sh, mul(dir, armLen * 0.972)), mul(uA, -0.018 * H))); // rounded mitten tip
 
     // Thumb: from the side of the palm, pointing forward and down along the hand.
     const hs = armS(wristU + 0.05);
@@ -543,7 +572,7 @@ export function buildCharacter(spec, opts = {}) {
       const w = weightsAlong(-y, [['Hips', -hipYm + 0.02 * H], [side + 'UpperLeg', -pos[side + 'LowerLeg'][1]], [side + 'LowerLeg', -pos[side + 'Foot'][1] + 0.01 * H], [side + 'Foot', Infinity]], 0.03 * H);
       const sc = u < 0 ? 0.9 : scale;
       rings.push({
-        c: [s * st.cx * H * hipW, y, st.cz * H], u: [1, 0, 0], v: [0, 0, 1],
+        c: [s * legCX(u), y, st.cz * H], u: [1, 0, 0], v: [0, 0, 1],
         rx: st.hw * H * lookup(legW, u) * sc, ry: st.hd * H * lookup(legD, u) * sc, shape: s > 0 ? st.shape : mirrorShape(st.shape), w,
       });
     };
@@ -567,7 +596,7 @@ export function buildCharacter(spec, opts = {}) {
       const st = footS(uu);
       const z = L.heelZ * H + footLen * uu;
       return {
-        c: [s * st.cx * H * hipW, st.cz * H * yScale, z], u: [1, 0, 0], v: [0, 1, 0],
+        c: [s * legCX(1) + s * (st.cx - legS(1).cx) * H, st.cz * H * yScale, z], u: [1, 0, 0], v: [0, 1, 0],
         rx: st.hw * H * 1.04, ry: st.hd * H * yScale * 1.04, shape: s > 0 ? st.shape : mirrorShape(st.shape),
         w: weightsAlong(z, [[side + 'Foot', ballZ], [side + 'Toes', Infinity]], 0.012 * H),
       };
@@ -608,5 +637,7 @@ export function buildCharacter(spec, opts = {}) {
   }
 
   const bones = BONES.map((name) => ({ name, parent: PARENT[name] ? BI[PARENT[name]] : -1, pos: pos[name] }));
-  return { bones, bodyType, hairStyle, bottomStyle: skirtY != null ? 'skirt' : bottomStyle, mesh: { position, normal, joints, weights, triangles: N, groups }, spec };
+  // Resolved style names for reports: skirt, shorts (legs bare above the knee) or trousers.
+  const resolvedBottom = skirtY != null ? 'skirt' : bottomStyle === 'shorts' || (bottomStyle === 'auto' && look.trouserT < 0.6) ? 'shorts' : 'trousers';
+  return { bones, bodyType, hairStyle, bottomStyle: resolvedBottom, mesh: { position, normal, joints, weights, triangles: N, groups }, spec };
 }

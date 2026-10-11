@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 const ROOT = fileURLToPath(new URL('.', import.meta.url));
 const MOUNTS = [
   ['/vendor/three/', resolve(ROOT, 'node_modules/three')],
+  ['/test/', resolve(ROOT, 'test')], // browser-side test helpers + fixtures
   ['/', resolve(ROOT, 'public')],
 ];
 const TYPES = {
