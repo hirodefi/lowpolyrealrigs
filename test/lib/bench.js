@@ -67,6 +67,7 @@ export async function runSynthetic(c) {
   const got = {
     body: rec.stats.body, hair: rec.stats.hair, bottom: rec.stats.bottom,
     colors: look5(rec.character.spec.look), landmarks: landmarks(rec.character), notes: rec.stats.notes,
+    validation: rec.stats.validation,
   };
   // Silhouettes: truth (transparent) vs recovered model, both from the same cameras.
   const truthMasks = await renderViews(truthGen.glb, { bg: null, flat: true });
@@ -95,6 +96,7 @@ export async function runExternal(c) {
   return {
     name: c.name,
     got: { body: rec.stats.body, hair: rec.stats.hair, bottom: rec.stats.bottom, colors: look5(rec.character.spec.look), landmarks: landmarks(rec.character), notes: rec.stats.notes },
+    validation: rec.stats.validation,
     spec: summarizeSpec(rec.character.spec),
     views, triangles: rec.stats.triangles, glb: Array.from(rec.glb), files,
   };
@@ -112,4 +114,35 @@ function summarizeSpec(s) {
     arm: Object.fromEntries(Object.entries(s.arm).map(([k, x]) => [k, +x.toFixed(4)])),
     look,
   };
+}
+
+/**
+ * Suite C: break a clean synthetic input in one specific way and report which
+ * validator checks fire. c = { name, gen, bg, perturb: 'gradient'|'lowcontrast'|'scale'|'crop'|'frontonly', expect: check id }
+ */
+export async function runAdversarial(c) {
+  const truthGen = generateCharacter(sampleImages(), { ...c.gen, height: H, proportions: 'template' });
+  const shots = await renderViews(truthGen.glb, { bg: c.bg, flat: true });
+  const input = {};
+  for (const v of VIEWS) input[v] = await toAnalysisImage(shots[v]);
+  const files = {};
+  const map = (img, fn) => { const d = img.data; for (let y = 0; y < img.height; y++) for (let x = 0; x < img.width; x++) { const i = (y * img.width + x) * 4; fn(d, i, x, y); } };
+  if (c.perturb === 'gradient') for (const v of VIEWS) map(input[v], (d, i, x, y) => { const k = 1.18 - 0.45 * (y / input[v].height); for (let j = 0; j < 3; j++) d[i + j] = Math.min(255, d[i + j] * k); });
+  if (c.perturb === 'scale') { // side view at 90% scale, same canvas
+    const src = input.side, c2 = new OffscreenCanvas(src.width, src.height), ctx = c2.getContext('2d');
+    ctx.fillStyle = `rgb(${c.bg.join(',')})`; ctx.fillRect(0, 0, src.width, src.height);
+    const tmp = new OffscreenCanvas(src.width, src.height); tmp.getContext('2d').putImageData(new ImageData(new Uint8ClampedArray(src.data), src.width, src.height), 0, 0);
+    ctx.drawImage(tmp, src.width * 0.05, src.height * 0.1, src.width * 0.9, src.height * 0.9);
+    input.side = ctx.getImageData(0, 0, src.width, src.height);
+  }
+  if (c.perturb === 'crop') { // cut the feet off the front view
+    const src = input.front, h2 = Math.round(src.height * 0.94);
+    input.front = { width: src.width, height: h2, data: new Uint8ClampedArray(src.data.subarray(0, src.width * h2 * 4)) };
+  }
+  if (c.perturb === 'frontonly') { delete input.side; delete input.back; }
+  for (const v of VIEWS) if (input[v]) files[`input_${v}.png`] = Array.from(await toPNG(input[v]));
+  let issues = [];
+  try { issues = generateCharacter(input, { height: H }).validation.filter((i) => i.level !== 'pass'); }
+  catch (e) { issues = [{ id: 'error', level: 'fail', view: '-', message: e.message }]; }
+  return { name: c.name, expect: c.expect, issues: issues.map((i) => ({ id: i.id, view: i.view, level: i.level })), files };
 }

@@ -18,12 +18,30 @@
   <main>
     <section class="panel inputs">
       <h2>1. Reference images</h2>
-      <p class="hint">Full body, one person, plain background (or transparent PNG), arms slightly away from the body. Side and back views are optional but improve depth and colours.</p>
+      <p class="hint">Front, side and back views of one person, head to soles, on a plain contrasting background. Front only works too, in a basic mode.</p>
+      <details class="guide">
+        <summary>How to prepare reference images</summary>
+        <ul>
+          <li><b>All views:</b> same character, same scale and framing, full body from the top of the hair to the shoe soles, centred. PNG, at least 1024 px tall.</li>
+          <li><b>Background:</b> one flat colour that contrasts with hair, skin and every piece of clothing (no grey backdrop for grey clothes). No gradients, vignettes or floor shadows.</li>
+          <li><b>Camera:</b> orthographic, or a long lens from far away. Even, neutral lighting.</li>
+          <li><b>Front:</b> facing the camera, relaxed A-pose with the arms a little away from the torso, legs straight and slightly apart.</li>
+          <li><b>Side:</b> an exact 90° profile, standing (not mid-stride), arms visible, feet flat.</li>
+          <li><b>Back:</b> a direct rear view showing the hair length and the back of the clothes; no face visible.</li>
+          <li><b>Hard backgrounds:</b> add a mask per view (white figure on black) with <i>+ mask</i>.</li>
+        </ul>
+      </details>
       <div class="slots">
         <label class="slot" data-view="front"><span>Front <b>*</b></span><input type="file" accept="image/*" hidden /><canvas></canvas><em>Drop or click</em></label>
         <label class="slot" data-view="side"><span>Side</span><input type="file" accept="image/*" hidden /><canvas></canvas><em>Drop or click</em></label>
         <label class="slot" data-view="back"><span>Back</span><input type="file" accept="image/*" hidden /><canvas></canvas><em>Drop or click</em></label>
       </div>
+      <div class="masks">
+        <label class="mask" data-view="front">+ mask<input type="file" accept="image/*" hidden /></label>
+        <label class="mask" data-view="side">+ mask<input type="file" accept="image/*" hidden /></label>
+        <label class="mask" data-view="back">+ mask<input type="file" accept="image/*" hidden /></label>
+      </div>
+      <label class="sheet secondary-btn">Load a turnaround sheet (front | side | back in one image)<input type="file" id="sheet" accept="image/*" hidden /></label>
       <label class="toggle"><input type="checkbox" id="showMask" /> Show detected silhouette</label>
       <button id="sample" class="secondary">Load demo character</button>
 
@@ -49,6 +67,7 @@
       </div>
       <button id="generate" disabled>Generate character</button>
       <div id="status" role="status"></div>
+      <ul id="checks"></ul>
     </section>
 
     <section class="panel viewer">

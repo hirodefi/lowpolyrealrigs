@@ -5,9 +5,11 @@ import { generateCharacter } from './core/pipeline.js';
 import { analyzeImage } from './core/silhouette.js';
 import { sampleImages } from './core/samples.js';
 import { toAnalysisImage } from './image-input.js';
+import { splitTurnaround } from './core/silhouette.js';
 
 const $ = (s) => document.querySelector(s);
 const images = { front: null, side: null, back: null };
+const masks = {};
 let lastGLB = null, lastFront = null;
 
 // ---------- image slots ----------
@@ -23,6 +25,28 @@ for (const slot of document.querySelectorAll('.slot')) {
     if (f) loadFile(view, f);
   });
 }
+
+// Optional masks (white figure on black) per view.
+for (const el of document.querySelectorAll('.mask')) {
+  const input = el.querySelector('input');
+  input.addEventListener('change', async () => {
+    if (!input.files[0]) return;
+    masks[el.dataset.view] = await toAnalysisImage(input.files[0]);
+    el.firstChild.textContent = 'mask set';
+    el.classList.add('set');
+  });
+}
+
+// Turnaround sheet: split into front / side / back and fill the slots.
+$('#sheet').addEventListener('change', async (e) => {
+  const f = e.target.files[0];
+  if (!f) return;
+  try {
+    const parts = splitTurnaround(await toAnalysisImage(f, 2048));
+    for (const v of ['front', 'side', 'back']) setImage(v, await toAnalysisImage(parts[v]));
+    status('Sheet split into front, side and back - check the three slots.');
+  } catch (err) { status(err.message, true); }
+});
 
 async function loadFile(view, file) {
   try {
@@ -73,9 +97,10 @@ $('#generate').addEventListener('click', async () => {
   try {
     status('Generating...');
     await new Promise((r) => setTimeout(r, 20)); // let the status paint
-    const res = generateCharacter(images, {
+    const res = generateCharacter({ ...images, masks }, {
       height: Number($('#height').value) || 1.7,
       detail: $('#detail').value,
+      strict: true,
       body: $('#body').value,
       hair: $('#hair').value,
       bottom: $('#bottom').value,
@@ -94,12 +119,20 @@ $('#generate').addEventListener('click', async () => {
       ['Clips', s.clips.length ? s.clips.join(', ') : 'none'], ['File size', `${(s.bytes / 1024).toFixed(1)} KB`], ['Time', `${s.ms} ms`],
     ].map(([k, v]) => `<div><dt>${k}</dt><dd>${v}</dd></div>`).join('');
     status(`Done.${s.notes.length ? '\nNotes: ' + s.notes.join('; ') : ''}`);
+    showChecks(res.validation);
     $('#download').disabled = false;
   } catch (e) {
     console.error(e);
     status(e.message, true);
+    if (e.validation) showChecks(e.validation);
   }
 });
+
+function showChecks(checks) {
+  const order = { fail: 0, warn: 1, pass: 2 };
+  $('#checks').innerHTML = checks.slice().sort((a, b) => order[a.level] - order[b.level])
+    .map((c) => `<li class="${c.level}"><b>${c.view === 'all' ? 'Input' : c.view[0].toUpperCase() + c.view.slice(1)}:</b> ${c.message}</li>`).join('');
+}
 
 $('#download').addEventListener('click', () => {
   if (!lastGLB) return;

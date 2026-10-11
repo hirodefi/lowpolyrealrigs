@@ -34,6 +34,13 @@ const SYNTHETIC = [
   { name: 'A5-child-short', gen: { body: 'child', hair: 'short', bottom: 'trousers', colors: { top: [230, 120, 40], bottom: [50, 80, 140] } }, bg: [225, 235, 225] },
   { name: 'A6-man-bald-dark-skin', gen: { body: 'male', hair: 'bald', bottom: 'trousers', colors: { skin: [110, 72, 52], top: [240, 240, 236], bottom: [38, 38, 42] } }, bg: [170, 200, 230] },
 ];
+const ADVERSARIAL = [
+  { name: 'C1-gradient-backdrop', perturb: 'gradient', expect: 'background-gradient' },
+  { name: 'C2-trousers-match-backdrop', perturb: 'none', gen: { bottom: 'trousers', colors: { bottom: [200, 200, 200] } }, bg: [200, 200, 200], expect: ['low-contrast', 'figure-broken'] },
+  { name: 'C3-side-view-wrong-scale', perturb: 'scale', expect: 'scale-mismatch' },
+  { name: 'C4-feet-cropped', perturb: 'crop', expect: 'cropped' },
+  { name: 'C5-front-only', perturb: 'frontonly', expect: 'views' },
+].map((c) => ({ gen: { body: 'male', hair: 'short', bottom: 'trousers', colors: { top: [32, 44, 78], bottom: [196, 170, 120] } }, bg: [236, 236, 236], ...c }));
 const EXTERNAL = [
   { name: 'X0-woman-clean-views', views: { front: '/test/fixtures/woman/front.png', side: '/test/fixtures/woman/side.png', back: '/test/fixtures/woman/back.png' } },
   { name: 'X1-turnaround-sheet', sheet: '/test/fixtures/turnaround/sheet.webp' },
@@ -50,7 +57,7 @@ page.on('pageerror', (e) => console.log('page error:', e.message));
 await page.goto(`http://localhost:${PORT}/`);
 
 const save = (dir, files) => { mkdirSync(dir, { recursive: true }); for (const [n, bytes] of Object.entries(files)) writeFileSync(`${dir}/${n}`, Buffer.from(bytes)); };
-const report = { synthetic: [], external: [], tolerances: TOL };
+const report = { synthetic: [], adversarial: [], external: [], tolerances: TOL };
 let failures = 0;
 const flag = (ok) => (ok ? '  ' : '<<');
 
@@ -76,6 +83,21 @@ try {
     const lmMax = Math.max(...Object.values(r.lmErr)), colMax = Math.max(...Object.values(r.colorErr));
     console.log(`${r.pass ? 'PASS' : 'FAIL'} ${c.name.padEnd(30)} styles ${r.got.body}/${r.got.hair}/${r.got.bottom}  lm max ${(lmMax * 100).toFixed(1)}%  colour max ${colMax}  ${vs}  ${r.triangles} tris`);
     for (const f of fails) console.log(`       - ${f}`);
+    // Clean synthetic inputs must not raise input warnings (other than tier notes).
+    const spurious = r.got.validation.issues.filter((i) => i.id !== 'views' && i.id !== 'neck');
+    if (spurious.length) { console.log(`       ! validator flagged clean input: ${spurious.map((i) => i.view + ':' + i.id).join(', ')}`); }
+  }
+
+  console.log('\nSuite C - adversarial inputs (the validator must flag each one)');
+  for (const c of ADVERSARIAL) {
+    if (only && !c.name.startsWith(only)) continue;
+    const r = await page.evaluate(async (c) => (await import('/test/lib/bench.js')).runAdversarial(c), c);
+    save(`out/benchmark/${c.name}`, r.files); delete r.files;
+    const expect = [].concat(c.expect);
+    r.pass = r.issues.some((i) => expect.includes(i.id));
+    if (!r.pass) failures++;
+    report.adversarial.push(r);
+    console.log(`${r.pass ? 'PASS' : 'FAIL'} ${c.name.padEnd(30)} expects ${[].concat(c.expect).join('|').padEnd(26)} got: ${r.issues.map((i) => `${i.view}:${i.id}(${i.level})`).join(', ') || 'nothing'}`);
   }
 
   console.log('\nExternal references (report only)');
@@ -93,6 +115,9 @@ try {
     const vs = Object.entries(r.views).map(([v, m]) => `${v[0]} IoU ${m.iou.toFixed(3)} w ${(m.widthErr * 100).toFixed(1)}%`).join(' | ');
     console.log(`${r.flags.length ? 'WARN' : 'OK  '} ${c.name.padEnd(30)} ${r.got.body}/${r.got.hair}/${r.got.bottom}  ${vs}`);
     console.log(`       notes: ${r.got.notes.join('; ') || '-'}`);
+    // Attribute mismatches: a view the validator flagged is an INPUT problem.
+    const inputIssues = r.validation.issues;
+    for (const i of inputIssues) console.log(`       input ${i.level}: [${i.view}] ${i.id} - ${i.message}`);
     for (const f of r.flags) console.log(`       - ${f}`);
   }
 } catch (e) { console.error(e); failures++; }

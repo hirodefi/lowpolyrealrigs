@@ -4,22 +4,31 @@ import { measureBody } from './measure.js';
 import { buildCharacter } from './builder.js';
 import { makeAnimations } from './animation.js';
 import { exportGLB } from './glb.js';
+import { validateInputs, summarizeValidation } from './validate.js';
 
 /**
  * @param {{front:ImageLike, side?:ImageLike|null, back?:ImageLike|null}} images RGBA {width,height,data}
- * @param {{height?:number, body?:'auto'|'male'|'female'|'child', preset?:string, hair?:string, bottom?:string, colors?:object, detail?:'low'|'medium'|'high', animations?:boolean, name?:string}} opts
+ * @param {{height?:number, body?:'auto'|'male'|'female'|'child', preset?:string, hair?:string, bottom?:string, colors?:object, strict?:boolean, detail?:'low'|'medium'|'high', animations?:boolean, name?:string}} opts
  */
 export function generateCharacter(images, opts = {}) {
   const t0 = now();
   if (!images.front) throw new Error('A front view is required.');
+  const masks = images.masks || {};
   const sil = {
-    front: analyzeImage(images.front),
-    side: images.side ? analyzeImage(images.side) : null,
-    back: images.back ? analyzeImage(images.back) : null,
+    front: analyzeImage(images.front, { maskImage: masks.front }),
+    side: images.side ? analyzeImage(images.side, { maskImage: masks.side }) : null,
+    back: images.back ? analyzeImage(images.back, { maskImage: masks.back }) : null,
   };
   const spec = measureBody(sil.front, sil.side, sil.back, { height: opts.height ?? 1.7 });
   // Optional colour overrides per material ({ top: [r,g,b], ... }), e.g. to re-dress a character.
   for (const [k, c] of Object.entries(opts.colors || {})) spec.look[k] = c;
+  const validation = validateInputs(images, sil, spec);
+  // strict: refuse to build from inputs that fail the contract (the app uses this).
+  if (opts.strict && validation.some((c) => c.level === 'fail')) {
+    const err = new Error('The reference images need fixing before a character can be built.');
+    err.validation = validation;
+    throw err;
+  }
   const character = buildCharacter(spec, { detail: opts.detail, body: opts.body, preset: opts.preset, hair: opts.hair, bottom: opts.bottom, proportions: opts.proportions });
   const animations = opts.animations === false ? [] : makeAnimations(character);
   const glb = exportGLB(character, animations, { name: opts.name });
@@ -28,6 +37,7 @@ export function generateCharacter(images, opts = {}) {
     character,
     animations,
     silhouettes: sil,
+    validation,
     stats: {
       triangles: character.mesh.triangles,
       bones: character.bones.length,
@@ -39,6 +49,7 @@ export function generateCharacter(images, opts = {}) {
       bytes: glb.byteLength,
       ms: Math.round(now() - t0),
       notes: spec.notes,
+      validation: summarizeValidation(validation),
     },
   };
 }

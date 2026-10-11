@@ -40,6 +40,15 @@ try {
   await page.check('#compare');
   await page.waitForTimeout(300);
   await page.screenshot({ path: 'out/ui_compare.png' });
+  // Turnaround sheet upload: split into three slots, generate, checklist shown.
+  await page.setInputFiles('#sheet', 'test/fixtures/turnaround/sheet.webp');
+  await page.waitForFunction(() => document.querySelector('#status').textContent.startsWith('Sheet split'), null, { timeout: 15000 });
+  await page.click('#generate');
+  await page.waitForFunction(() => /^Done/.test(document.querySelector('#status').textContent), null, { timeout: 20000 });
+  const checks = await page.$$eval('#checks li', (els) => els.map((e) => e.className + ': ' + e.textContent));
+  console.log('sheet checks:', checks.length, checks.filter((c) => c.startsWith('warn')).map((c) => c.slice(0, 70)));
+  if (!checks.length) throw new Error('validator checklist not shown');
+  await page.screenshot({ path: 'out/ui_sheet_checks.png' });
   const bytes = await page.evaluate(() => window.__app.glb.byteLength);
   console.log('glb bytes:', bytes);
   if (errors.length) { console.log('page errors:', errors); code = 1; }

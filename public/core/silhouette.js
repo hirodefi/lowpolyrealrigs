@@ -13,7 +13,15 @@ export function analyzeImage(img, opts = {}) {
   //    otherwise model the background and flood it in from the border.
   let transparent = 0;
   for (let i = 3; i < data.length; i += 4) if (data[i] < 128) transparent++;
-  if (transparent > w * h * 0.05) {
+  if (opts.maskImage) {
+    // User-supplied mask (white figure on black, or alpha), resampled if needed.
+    const M = opts.maskImage;
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+      const mx = Math.min(M.width - 1, Math.floor((x * M.width) / w)), my = Math.min(M.height - 1, Math.floor((y * M.height) / h));
+      const j = (my * M.width + mx) * 4, lum = (M.data[j] + M.data[j + 1] + M.data[j + 2]) / 3;
+      mask[y * w + x] = M.data[j + 3] >= 128 && lum >= 128 ? 1 : 0;
+    }
+  } else if (transparent > w * h * 0.05) {
     for (let i = 0; i < w * h; i++) mask[i] = data[i * 4 + 3] >= 128 ? 1 : 0;
   } else {
     floodBackground(img, mask);
@@ -25,8 +33,9 @@ export function analyzeImage(img, opts = {}) {
   //    below it. Long gaps (between the legs, beside the arms) stay open.
   // opts.raw: keep every pixel as-is (used for renders of our own models, where
   // a disconnected piece is a defect to report, not noise to drop).
+  let dropped = 0;
   if (!opts.raw) {
-    keepLargestComponent(mask, w, h);
+    dropped = keepLargestComponent(mask, w, h);
     closeVertical(mask, w, h);
     keepLargestComponent(mask, w, h);
   }
@@ -51,7 +60,9 @@ export function analyzeImage(img, opts = {}) {
     runs.push(row);
   }
 
-  return new Silhouette(img, mask, { x0, x1, y0, y1 }, runs);
+  const S = new Silhouette(img, mask, { x0, x1, y0, y1 }, runs);
+  S.droppedFrac = dropped;
+  return S;
 }
 
 /**
@@ -202,6 +213,7 @@ function keepLargestComponent(mask, w, h) {
   const label = new Int32Array(w * h);
   const stack = new Int32Array(w * h);
   let best = 0, bestSize = 0, next = 0;
+  const sizes = [];
   for (let i = 0; i < w * h; i++) {
     if (!mask[i] || label[i]) continue;
     next++;
@@ -215,9 +227,13 @@ function keepLargestComponent(mask, w, h) {
       if (y > 0 && mask[p - w] && !label[p - w]) { label[p - w] = next; stack[sp++] = p - w; }
       if (y < h - 1 && mask[p + w] && !label[p + w]) { label[p + w] = next; stack[sp++] = p + w; }
     }
+    sizes.push(size);
     if (size > bestSize) { bestSize = size; best = next; }
   }
   for (let i = 0; i < w * h; i++) mask[i] = label[i] === best ? 1 : 0;
+  // Size of the largest piece dropped, relative to the kept figure.
+  sizes.sort((a, b) => b - a);
+  return bestSize ? (sizes[1] || 0) / bestSize : 0;
 }
 
 export class Silhouette {
