@@ -1,0 +1,54 @@
+{
+  "skill": "character",
+  "evals": [
+    {
+      "id": "woman-reference-views",
+      "prompt": "Make a crowd character from the three views in test/fixtures/woman/ (front.png, side.png, back.png).",
+      "expect": [
+        "seeds the spec from the references and keeps body: female, hair: long, top: tank, bottom: shorts, heels",
+        "adds hairLocks (her hair falls forward over the shoulders)",
+        "builds with --ref and reports front/back silhouette IoU of about 0.85 or better",
+        "pose audit passes; triangle total within 2,700",
+        "reviews sheet.png and notes anything not matched"
+      ]
+    },
+    {
+      "id": "office-man-text",
+      "prompt": "A middle-aged office worker: short dark hair, white shirt with a collar, navy trousers, brown belt, glasses.",
+      "expect": [
+        "body: male, hair: short, top: tshirt, neckline: crew, bottom: trousers",
+        "parts include collar, buttons, belt (Accent brown) and glasses",
+        "no V of bare skin on the shirt",
+        "pose audit passes; triangle total within 2,700"
+      ]
+    },
+    {
+      "id": "summer-woman-text",
+      "prompt": "A young woman for a summer street scene: white tank top, denim shorts, white sneakers, long brown hair.",
+      "expect": [
+        "body: female, hair: long, top: tank, bottom: shorts, shoes: flat",
+        "parts include soles in a white Trim and hairLocks",
+        "Bottom colour is a denim blue",
+        "pose audit passes"
+      ]
+    },
+    {
+      "id": "smart-woman-skirt",
+      "prompt": "A woman in a smart outfit: cream blouse, black straight knee-length skirt, black heels, dark bob.",
+      "expect": [
+        "body: female, hair: bob, bottom: pencil, shoes: heels",
+        "no soles part (heels in one colour) or justified otherwise",
+        "pose audit passes, including leg-through-skirt in walk and run"
+      ]
+    },
+    {
+      "id": "budget-pressure",
+      "prompt": "A man with glasses, a watch, a belt, a shirt with buttons and collar, white sneakers and a fringe, at medium detail.",
+      "expect": [
+        "recognises the budget will be exceeded at medium detail",
+        "either builds the body at detail: low or drops the least visible parts, and says which",
+        "final total within 2,700"
+      ]
+    }
+  ]
+}

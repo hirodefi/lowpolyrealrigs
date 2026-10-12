@@ -1,0 +1,16 @@
+{
+  "name": "casual_woman",
+  "body": "female",
+  "hair": "long",
+  "top": "tank",
+  "bottom": "shorts",
+  "shoes": "flat",
+  "detail": "low",
+  "colors": { "Skin": [232, 190, 160], "Hair": [96, 70, 60], "Top": [236, 236, 232], "Bottom": [64, 66, 76], "Shoes": [240, 240, 240], "Accent": [120, 80, 50], "Trim": [250, 250, 250] },
+  "parts": [
+    { "part": "hairLocks" },
+    { "part": "fringe", "count": 2 },
+    { "part": "belt", "width": 0.018 },
+    { "part": "soles" }
+  ]
+}

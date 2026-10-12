@@ -1,0 +1,17 @@
+{
+  "name": "office_man",
+  "body": "male",
+  "hair": "short",
+  "top": "tshirt",
+  "bottom": "trousers",
+  "shoes": "flat",
+  "detail": "low",
+  "colors": { "Skin": [214, 170, 136], "Hair": [48, 36, 28], "Top": [236, 238, 242], "Bottom": [44, 48, 60], "Shoes": [40, 30, 24], "Accent": [70, 44, 30], "Trim": [200, 190, 170] },
+  "parts": [
+    { "part": "collar" },
+    { "part": "buttons", "count": 4 },
+    { "part": "belt" },
+    { "part": "glasses", "style": "square", "material": "Accent" },
+    { "part": "watch" }
+  ]
+}

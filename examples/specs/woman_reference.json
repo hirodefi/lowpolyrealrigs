@@ -1,0 +1,45 @@
+{
+  "name": "woman_reference",
+  "body": "female",
+  "detail": "low",
+  "hair": "long",
+  "top": "tank",
+  "bottom": "shorts",
+  "shoes": "heels",
+  "colors": {
+    "Skin": [
+      226,
+      180,
+      147
+    ],
+    "Hair": [
+      114,
+      93,
+      90
+    ],
+    "Top": [
+      228,
+      224,
+      223
+    ],
+    "Bottom": [
+      99,
+      92,
+      90
+    ],
+    "Shoes": [
+      125,
+      113,
+      112
+    ]
+  },
+  "parts": [
+    {
+      "part": "hairLocks",
+      "perSide": 1,
+      "length": 0.15,
+      "width": 0.024
+    }
+  ],
+  "notes": "Build with the reference views: character.mjs build examples/specs/woman_reference.json --ref test/fixtures/woman. From test/fixtures/woman: long hair worn forward over both shoulders, centre part (no fringe), thin-strap tank, grey shorts, grey heels."
+}

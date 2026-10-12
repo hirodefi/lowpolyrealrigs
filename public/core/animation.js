@@ -170,14 +170,14 @@ export function makeAnimations(character) {
     const L = phase, R = (phase + 0.5) % 1;
     const legs = {};
     for (const [side, ph] of [['Left', L], ['Right', R]]) {
-      legs[side + 'UpperLeg'] = [-C.hip(ph) * DEG, 0, 0];
+      legs[side + 'UpperLeg'] = [-C.hip(ph) * DEG * o.stride, 0, 0];
       legs[side + 'LowerLeg'] = [C.knee(ph) * DEG, 0, 0];
       legs[side + 'Foot'] = [-C.ankle(ph) * DEG, 0, 0];
       legs[side + 'Toes'] = [-C.toe(ph) * DEG, 0, 0];
     }
     const c = Math.cos(phase * 2 * Math.PI), s = Math.sin(phase * 2 * Math.PI);
     // Arms swing opposite to the same-side leg; elbows bend more on the forward swing.
-    const armL = C.hip(R) * DEG * o.arm, armR = C.hip(L) * DEG * o.arm;
+    const armL = C.hip(R) * DEG * o.arm * o.stride, armR = C.hip(L) * DEG * o.arm * o.stride;
     const elbow = (sw) => o.elbow + Math.max(0, sw) * o.elbowGain;
     return {
       // Weight shifts over the stance leg; the pelvis turns with the forward leg and
@@ -196,6 +196,12 @@ export function makeAnimations(character) {
       },
     };
   };
+
+  // A skirt shortens the stride (the fabric limits how far a thigh swings); a
+  // straight knee skirt more than an A-line. Ground speed is measured from the
+  // result, so the feet still don't slide.
+  const bottom = character.bottomStyle;
+  const stride = (walk) => (bottom === 'pencil' ? (walk ? 0.78 : 0.5) : bottom === 'skirt' ? (walk ? 0.85 : 0.65) : 1);
 
   return [
     // Idle: slow breathing with a very small weight shift; feet stay planted.
@@ -219,8 +225,8 @@ export function makeAnimations(character) {
         },
       };
     }),
-    clip('walk', 1.1, 32, gait(WALK, { arm: 0.65, elbow: 0.32, elbowGain: 0.9, sway: 0.022, yaw: 5 * DEG, roll: 3.5 * DEG, lean: 3 * DEG, stance: 0.6 }), { loop: true, measureSpeed: true }),
-    clip('run', 0.72, 24, gait(RUN, { arm: 0.9, elbow: 1.45, elbowGain: 0.4, sway: 0.012, yaw: 8 * DEG, roll: 3 * DEG, lean: 10 * DEG, stance: 0.36, flight: 0.36 }), { loop: true, measureSpeed: true, flight: 0.05 }),
+    clip('walk', 1.1, 32, gait(WALK, { stride: stride(true), arm: 0.65, elbow: 0.32, elbowGain: 0.9, sway: 0.022, yaw: 5 * DEG, roll: 3.5 * DEG, lean: 3 * DEG, stance: 0.6 }), { loop: true, measureSpeed: true }),
+    clip('run', 0.72, 24, gait(RUN, { stride: stride(false), arm: 0.9, elbow: 1.45, elbowGain: 0.4, sway: 0.012, yaw: 8 * DEG, roll: 3 * DEG, lean: 10 * DEG, stance: 0.36, flight: 0.36 }), { loop: true, measureSpeed: true, flight: 0.05 }),
     // Seated on a bench: thighs horizontal, shins vertical, feet on the floor. Held pose.
     clip('sit', 1, 1, () => ({
       root: [hips[0], B('LeftLowerLeg')[1], hips[2]],

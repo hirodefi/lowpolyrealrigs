@@ -1,0 +1,16 @@
+{
+  "name": "smart_woman",
+  "body": "female",
+  "detail": "low",
+  "hair": "bob",
+  "top": "tshirt",
+  "neckline": "crew",
+  "bottom": "pencil",
+  "shoes": "heels",
+  "colors": { "Skin": [206, 160, 128], "Hair": [32, 26, 24], "Top": [238, 228, 206], "Bottom": [30, 30, 34], "Shoes": [24, 24, 26], "Trim": [214, 196, 150] },
+  "parts": [
+    { "part": "fringe", "count": 3, "side": -1 },
+    { "part": "buttons", "count": 3, "to": { "at": "chest", "dy": -0.02 } }
+  ],
+  "notes": "Eval smart-woman-skirt: cream blouse, black straight knee skirt, black heels, dark bob. No soles (heels in one colour)."
+}

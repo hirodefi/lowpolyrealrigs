@@ -8,11 +8,16 @@
 // are exact and blend smoothly across joints. Every triangle belongs to one
 // region material (Skin, Hair, Top, Bottom, Shoes) with one flat colour each.
 
-import { TEMPLATE, BINS } from './template.js';
+import { TEMPLATE } from './template.js';
+import { add, sub, mul, dot, cross, norm, lerp, clamp, TAU, shapeAt, mirrorShape, stations, weightsAlong, smooth, lookup, invert, MeshBuilder } from './mesh.js';
+import { surface } from './kit.js';
+import { buildPart } from './parts/index.js';
 
 // Skin/Hair/Top/Bottom/Shoes are recoloured per person by the crowd; Accent
-// (collar, tie) and Eyes keep their colour.
-export const MATERIALS = ['Skin', 'Hair', 'Top', 'Bottom', 'Shoes', 'Accent', 'Eyes'];
+// (collar, tie, belt), Trim (soles, buttons, buckles, frames) and Eyes keep
+// their colour. Groups with no triangles are left out of the file.
+export const MATERIALS = ['Skin', 'Hair', 'Top', 'Bottom', 'Shoes', 'Accent', 'Trim', 'Eyes'];
+const FIXED = { Accent: [150, 32, 44], Trim: [236, 234, 228], Eyes: [46, 34, 30] };
 
 /** Body-shape presets: multipliers over the measured widths. */
 export const PRESETS = {
@@ -45,122 +50,6 @@ const PARENT = {
 };
 const BI = Object.fromEntries(BONES.map((b, i) => [b, i]));
 
-// ---------- small helpers ----------
-const add = (a, b) => [a[0] + b[0], a[1] + b[1], a[2] + b[2]];
-const sub = (a, b) => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
-const mul = (a, s) => [a[0] * s, a[1] * s, a[2] * s];
-const dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
-const cross = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
-const norm = (a) => { const l = Math.hypot(a[0], a[1], a[2]) || 1; return [a[0] / l, a[1] / l, a[2] / l]; };
-const lerp = (a, b, t) => a + (b - a) * t;
-const clamp = (x, a, b) => Math.min(b, Math.max(a, x));
-const TAU = Math.PI * 2;
-
-/** Periodic interpolation of a BINS-sample ring shape at parametric angle t. */
-function shapeAt(shape, t) {
-  const x = (((t / TAU) * BINS) % BINS + BINS) % BINS;
-  const i = Math.floor(x), f = x - i;
-  return lerp(shape[i % BINS], shape[(i + 1) % BINS], f);
-}
-/** Shape mirrored across the v axis (left limb -> right limb). */
-const mirrorShape = (shape) => shape.map((_, k) => shape[(BINS / 2 - k + BINS) % BINS]);
-
-/** Template stations with gaps filled, plus interpolation at any u. */
-function stations(list) {
-  const filled = list.map((s, i) => s || list.slice(i).find(Boolean) || list.slice(0, i).reverse().find(Boolean));
-  return (u) => {
-    if (u <= filled[0].u) return filled[0];
-    for (let i = 0; i + 1 < filled.length; i++) {
-      const a = filled[i], b = filled[i + 1];
-      if (u <= b.u) {
-        const t = (u - a.u) / (b.u - a.u);
-        return { u, cx: lerp(a.cx, b.cx, t), cz: lerp(a.cz, b.cz, t), hw: lerp(a.hw, b.hw, t), hd: lerp(a.hd, b.hd, t), shape: a.shape.map((v, k) => lerp(v, b.shape[k], t)) };
-      }
-    }
-    return filled[filled.length - 1];
-  };
-}
-
-/** Weights along a 1-D parameter. segs = [[bone, endParam], ..., [bone, Infinity]]. */
-function weightsAlong(s, segs, blend) {
-  for (let i = 0; i < segs.length; i++) {
-    const end = segs[i][1];
-    const prevEnd = i > 0 ? segs[i - 1][1] : -Infinity;
-    if (i > 0 && s < prevEnd + blend) {
-      const t = (s - (prevEnd - blend)) / (2 * blend);
-      return { [segs[i - 1][0]]: 1 - t, [segs[i][0]]: t };
-    }
-    if (s < end - blend || i === segs.length - 1) return { [segs[i][0]]: 1 };
-    if (s < end) {
-      const t = (s - (end - blend)) / (2 * blend);
-      return { [segs[i][0]]: 1 - t, [segs[i + 1][0]]: t };
-    }
-  }
-  return { [segs[segs.length - 1][0]]: 1 };
-}
-
-/** Light 3-tap smoothing of a factor list, then clamp. */
-const smooth = (arr, a, b) => arr.map((v, i) => clamp(0.25 * (arr[i - 1] ?? v) + 0.5 * v + 0.25 * (arr[i + 1] ?? v), a, b));
-/** Linear lookup in a factor list sampled evenly over [0, 1]. */
-const lookup = (arr, u) => { const n = arr.length - 1, x = clamp(u, 0, 1) * n, i = Math.min(n - 1, Math.floor(x)); return lerp(arr[i], arr[i + 1], x - i); };
-/** Bisection inverse of a monotonic increasing function on [0, 1]. */
-const invert = (fn, y) => { let lo = 0, hi = 1; for (let i = 0; i < 30; i++) { const m = (lo + hi) / 2; if (fn(m) < y) lo = m; else hi = m; } return (lo + hi) / 2; };
-
-class MeshBuilder {
-  constructor() { this.tris = []; this.mat = () => 'Skin'; }
-
-  /**
-   * rings: [{c, u, v, rx, ry, shape?, f?(t), w, wf?(t)}] ; S segments ; caps: apex points (or null).
-   * wf(t) optionally gives per-vertex weights (e.g. a skirt following both thighs).
-   * keep(i, k) optional: drop quads/caps whose vertices are all "not kept".
-   */
-  tube(rings, S, capStart, capEnd, keep) {
-    const pts = rings.map((r) => {
-      const out = [];
-      for (let k = 0; k < S; k++) {
-        const t = (k / S) * TAU + Math.PI / S;
-        const f = r.f ? r.f(t) : r.shape ? shapeAt(r.shape, t) : 1;
-        out.push(add(r.c, add(mul(r.u, r.rx * f * Math.cos(t)), mul(r.v, r.ry * f * Math.sin(t)))));
-      }
-      return out;
-    });
-    const W = rings.map((r) => Array.from({ length: S }, (_, k) => (r.wf ? r.wf((k / S) * TAU + Math.PI / S) : r.w)));
-    const kept = (i, k) => !keep || keep(i, k);
-    for (let i = 0; i + 1 < rings.length; i++) {
-      const ctr = mul(add(rings[i].c, rings[i + 1].c), 0.5);
-      for (let k = 0; k < S; k++) {
-        const k2 = (k + 1) % S;
-        if (!(kept(i, k) || kept(i, k2) || kept(i + 1, k) || kept(i + 1, k2))) continue;
-        const a = pts[i][k], b = pts[i][k2], c = pts[i + 1][k2], d = pts[i + 1][k];
-        this.tri([a, b, c], [W[i][k], W[i][k2], W[i + 1][k2]], ctr);
-        this.tri([a, c, d], [W[i][k], W[i + 1][k2], W[i + 1][k]], ctr);
-      }
-    }
-    if (capStart) this.cap(pts[0], rings[0], capStart, (k) => kept(0, k));
-    if (capEnd) this.cap(pts[pts.length - 1], rings[rings.length - 1], capEnd, (k) => kept(rings.length - 1, k));
-  }
-
-  cap(ring, r, apex, kept) {
-    const S = ring.length;
-    for (let k = 0; k < S; k++) if (kept(k) || kept((k + 1) % S)) this.tri([ring[k], ring[(k + 1) % S], apex], [r.w, r.w, r.w], r.c, apex);
-  }
-
-  /** Pyramid: base polygon (on a surface) + apex, outward faces only. */
-  spike(base, apex, w) {
-    const ctr = mul(base.reduce((a, b) => add(a, b), [0, 0, 0]), 1 / base.length);
-    for (let k = 0; k < base.length; k++) this.tri([base[k], base[(k + 1) % base.length], apex], [w, w, w], ctr, apex);
-  }
-
-  // Adds a triangle wound so its normal points away from `inside` (or towards `toward`).
-  tri(p, w, inside, toward = null) {
-    const n = cross(sub(p[1], p[0]), sub(p[2], p[0]));
-    if (Math.hypot(...n) < 1e-12) return;
-    const centroid = mul(add(add(p[0], p[1]), p[2]), 1 / 3);
-    const out = toward ? sub(toward, inside) : sub(centroid, inside);
-    if (dot(n, out) < 0) { p = [p[0], p[2], p[1]]; w = [w[0], w[2], w[1]]; }
-    this.tris.push({ p, w, m: this.mat(centroid, norm(cross(sub(p[1], p[0]), sub(p[2], p[0])))) });
-  }
-}
 
 /** Hair style from the photo: none, short cap, bob to the jaw/neck, or long down the back. */
 function pickHairStyle(opt, look, H, pos, shoulderY) {
@@ -226,6 +115,8 @@ function buildOnce(spec, opts) {
   const P = PRESETS[opts.preset] || {};
   const look = spec.look;
   const mb = new MeshBuilder();
+  // Ring stacks of the body, kept so parts (kit.js) can sit on its surface.
+  const surf = { arm: {}, leg: {}, foot: {} };
 
   // Template necks are about as wide as the jaw (the child's even wider), so the
   // chin doesn't read and the narrowest point lands on the chin. Cap the neck at
@@ -380,7 +271,9 @@ function buildOnce(spec, opts) {
   // Top style from the photo (or the UI): sleeveless tank, deep neckline.
   const topStyle = opts.top && opts.top !== 'auto' ? opts.top : look.sleeveT <= 0.02 ? 'tank' : 'tshirt';
   const tank = topStyle === 'tank';
-  const necklineY = Math.min(look.necklineY ?? Y(L.neck), Y(L.neck));
+  // Neckline: measured, or set by the spec (crew = closed at the neck, scoop / v = open).
+  const necklineY = opts.neckline === 'crew' ? Y(L.neck) : opts.neckline === 'scoop' ? Y(L.neck) - 0.05 * H : opts.neckline === 'v' ? Y(L.neck) - 0.09 * H
+    : Math.min(look.necklineY ?? Y(L.neck), Y(L.neck));
   const deepNeck = !opts.tie && necklineY < Y(L.neck) - 0.025 * H; // a tie means a closed collar
   const torsoUofY = (y) => clamp(invert((u) => Y(torsoY(u)), y), 0, 1);
 
@@ -453,6 +346,7 @@ function buildOnce(spec, opts) {
       return 'Top';
     };
     mb.tube(rings, D.torso, add(rings[0].c, [0, -0.012 * H, 0]), add(rings[rings.length - 1].c, [0, 0.004 * H, 0]));
+    surf.torso = surface(rings);
 
     // Tank straps: thin ribbons from the front panel, over the shoulder, down to
     // the back armhole line, lying on the torso surface.
@@ -516,10 +410,17 @@ function buildOnce(spec, opts) {
     const N = 5, rings = [];
     for (let i = 0; i <= N; i++) {
       const t = i / N, y = lerp(yTop, skirtY, t), [lx, ly] = enclose(y);
-      const k = 0.88 * t;
+      // Above the hip joints the skirt rides on the hips; from there to just below
+      // the crotch it hands over to the thighs (like trousers), so a raised thigh
+      // carries the skirt with it instead of passing through it.
+      const e = clamp((Y(L.hip) - y) / (Y(L.hip) - Y(L.crotch) + 0.05 * H), 0, 1);
+      const k = 0.9 * e * e * (3 - 2 * e);
       rings.push({
         c: [0, y, lerp(ts.cz * H, legS(0.5).cz * H, t)], u: [1, 0, 0], v: [0, 0, 1],
         rx: Math.max(lerp(rxTop, rxHem, pencil ? t : t ** 1.15), lx), ry: Math.max(lerp(ryTop, ryHem, pencil ? t : t ** 1.15), ly), shape: ts.shape.map((v) => lerp(v, 1, t)),
+        // Ease at the front: the front of the skirt can only follow the average of
+        // both thighs, so it needs fullness where the forward thigh swings into it.
+        f: (a) => shapeAt(ts.shape.map((v) => lerp(v, 1, t)), a) * (1 + (pencil ? 0.24 : 0.55) * t * t * Math.max(0, Math.sin(a)) ** 2),
         // Every hem vertex follows both thighs, weighted towards its own side.
         wf: (a) => { const c = Math.cos(a), wl = k * (1 + c) / 2, wr = k * (1 - c) / 2; return { Hips: 1 - k, LeftUpperLeg: wl, RightUpperLeg: wr }; },
       });
@@ -527,7 +428,7 @@ function buildOnce(spec, opts) {
     const last = rings[N];
     rings.push({ ...last, c: add(last.c, [0, 0.008 * H, 0]), rx: last.rx * 0.9, ry: last.ry * 0.9 }); // hem thickness
     mb.mat = () => 'Bottom';
-    mb.tube(rings, D.torso - 2, null, null);
+    mb.tube(rings, Math.max(10, D.torso - 2), null, null); // a flat front panel would let the thighs through
   }
 
   // ---------- neck + head (Skin) ----------
@@ -550,6 +451,7 @@ function buildOnce(spec, opts) {
     for (const u of HU) rings.push(headRing(u));
     mb.mat = () => 'Skin';
     mb.tube(rings, D.head, null, headTop);
+    surf.head = surface(rings);
   }
 
   // Face details: a nose wedge and two small ears (hidden under hanging hair).
@@ -578,6 +480,7 @@ function buildOnce(spec, opts) {
     const eu = invert(headYofU, Y(lerp(L.head, 1, 0.5)));
     const es = headS(eu), ey = headYofU(eu);
     const rx = es.hw * H * fh, ry = es.hd * H * fhd;
+    surf.eyes = { y: ey, x: rx * 0.36 };
     const surfZ = (x) => { // front surface z of the head ring at |x|
       const t = Math.acos(clamp(x / (rx * 1.02), -1, 1));
       return es.cz * H + ry * shapeAt(es.shape, t) * Math.sin(t);
@@ -606,7 +509,9 @@ function buildOnce(spec, opts) {
     // Front hairline curves up at the centre (parting) and sweeps down to the temples.
     // Hair framing the face: from the parting it sweeps down past the temples to
     // the side length (jaw level for long hair), not a straight fringe.
-    const sideY = Math.max(sideHairY, pos.Neck[1] + 0.03 * H);
+    // Long hair and bobs frame the face down to the jaw; short hair and ponytails
+    // stop at the temples (a man's short cut must not read as a bob).
+    const sideY = hairStyle === 'bob' || hairStyle === 'long' ? Math.max(sideHairY, pos.Neck[1] + 0.03 * H) : Math.max(sideHairY, Y(lerp(L.head, 1, 0.42)));
     const isHair = (y, t) => {
       const sn = Math.sin(t);
       if (sn > 0.8) return y > hairlineY + 0.014 * H * ((sn - 0.8) / 0.2) ** 1.5;
@@ -727,6 +632,7 @@ function buildOnce(spec, opts) {
       ring(u, u < -0.06 ? 0.72 : u < 0 ? 0.9 : u > 0.95 ? 0.72 : u <= sleeveEnd ? LOOSE : 1); // blunt fingertips
     }
     mb.mat = (c) => (dot(sub(c, sh), dir) / armLen <= sleeveEnd + 0.003 ? 'Top' : 'Skin');
+    surf.arm[side] = surface(rings.filter((r, i) => i === 0 || dot(sub(r.c, rings[i - 1].c), dir) > 0));
     mb.tube(rings, D.limb, add(sh, mul(rootDir, armLen * 0.1)), add(add(sh, mul(dir, armLen * 0.972)), mul(uA, -0.018 * H))); // rounded mitten tip
 
     // Thumb: from the side of the palm, pointing forward and down along the hand.
@@ -746,7 +652,7 @@ function buildOnce(spec, opts) {
   for (const [side, s] of [['Left', 1], ['Right', -1]]) {
     // Leg u (crotch -> ankle) where the trousers end; 2 = full length. Under a skirt the legs are bare.
     const trouserEnd = skirtY != null ? clamp((Y(L.crotch) - skirtY) / (Y(L.crotch) - Y(L.ankle[1])), 0, 1) - 0.06
-      : bottomStyle === 'trousers' ? 2 : bottomStyle === 'shorts' ? 0.32 : look.trouserT >= 1 ? 2 : look.trouserT;
+      : bottomStyle === 'trousers' ? 2 : bottomStyle === 'shorts' ? (opts.shortsLength != null ? opts.shortsLength : !TP && look.trouserT < 0.6 ? look.trouserT : 0.2) : look.trouserT >= 1 ? 2 : look.trouserT; // shorts: the measured length when there is a reference
     const LUx = [...new Set([-0.12, ...LU.slice(0, -1), kneeU - 0.03, kneeU, kneeU + 0.04, 0.97, 1])].sort((a, b) => a - b);
     const rings = [];
     const ring = (u, scale) => {
@@ -769,6 +675,7 @@ function buildOnce(spec, opts) {
     const endY = skirtY != null ? Infinity : trouserEnd > 1 ? -Infinity : Y(legY(trouserEnd)); // bare legs under a skirt
     mb.mat = (c) => (c[1] >= endY - 0.002 * H ? 'Bottom' : 'Skin');
     mb.tube(rings, D.limb, null, add(rings[rings.length - 1].c, [0, -0.008 * H, 0]));
+    surf.leg[side] = surface(rings);
 
     // Shoe: template foot sections from heel to toe (x/y rings along +Z).
     const footLen = (L.toeZ - L.heelZ) * H;
@@ -791,12 +698,26 @@ function buildOnce(spec, opts) {
       };
     });
     mb.mat = () => 'Shoes';
+    surf.foot[side] = surface(frings);
     mb.tube(frings, D.foot, add(frings[0].c, [0, 0, -0.006 * H]), add(frings[frings.length - 1].c, [0, -0.004 * H, 0.008 * H]));
     if (heels) {
       const hz = L.heelZ * H + footLen * 0.1, hx = frings[1].c[0], bw = 0.011 * H;
       const block = [[0, 0.85], [lift + 0.012 * H, 1]].map(([y, kk]) => ({ c: [hx, y, hz], u: [1, 0, 0], v: [0, 0, 1], rx: bw * kk, ry: bw * kk * 1.1, w: { [side + 'Foot']: 1 } }));
       mb.tube(block, 4, add(block[0].c, [0, -0.001 * H, 0]), null);
     }
+  }
+
+  // ---------- parts (kit.js + parts/): belts, soles, collars, buttons, hair locks, glasses ----------
+  const partReport = [];
+  if (opts.parts?.length) {
+    const land = {
+      crotch: Y(L.crotch), hip: Y(L.hip), waist: Y(lerp(L.hip, L.chest, 0.35)), chest: Y(L.chest), armpit: Y(L.armpit),
+      neck: pos.Neck[1], head: pos.Head[1], top: Y(1), hem: look.hemY, knee: Y(L.knee[1]), ankle: Y(L.ankle[1]),
+      eye: surf.eyes?.y ?? Y(lerp(L.head, 1, 0.5)), skirt: skirtY,
+    };
+    const ctx = { mb, H, pos, surf, land, look, bodyType, hairStyle, topStyle, bottomStyle, heels, female, D, eyeX: surf.eyes?.x ?? 0.016 * H };
+    opts.parts.forEach((p, i) => { mb.tag = `${p.part}#${i}`; partReport.push({ part: p.part, triangles: buildPart(ctx, p) }); });
+    mb.tag = 'body';
   }
 
   // ---------- normalise: feet on y = 0, total height exactly H ----------
@@ -827,7 +748,7 @@ function buildOnce(spec, opts) {
   let start = 0;
   for (const m of MATERIALS) {
     const count = mb.tris.filter((t) => t.m === m).length;
-    const color = m === 'Accent' ? (look.accent || opts.accentColor || [150, 32, 44]) : m === 'Eyes' ? (look.eyes || [46, 34, 30]) : look[m.toLowerCase()];
+    const color = opts.palette?.[m] || (m === 'Accent' ? look.accent || opts.accentColor : m === 'Eyes' ? look.eyes : m === 'Trim' ? look.trim : look[m.toLowerCase()]) || FIXED[m];
     if (count) groups.push({ material: m, color, start, count });
     start += count;
   }
@@ -835,5 +756,6 @@ function buildOnce(spec, opts) {
   const bones = BONES.map((name) => ({ name, parent: PARENT[name] ? BI[PARENT[name]] : -1, pos: pos[name] }));
   // Resolved style names for reports: skirt, shorts (legs bare above the knee) or trousers.
   const resolvedBottom = skirtY != null ? (pencil ? 'pencil' : 'skirt') : bottomStyle === 'shorts' || (bottomStyle === 'auto' && look.trouserT < 0.6) ? 'shorts' : 'trousers';
-  return { bones, bodyType, hairStyle, topStyle, heels, bottomStyle: resolvedBottom, mesh: { position, normal, joints, weights, triangles: N, groups }, spec, rawHeight };
+  // tags: which part made each triangle ('body' or 'belt#2'...), for the pose audit; not exported.
+  return { bones, bodyType, hairStyle, topStyle, heels, bottomStyle: resolvedBottom, mesh: { position, normal, joints, weights, triangles: N, groups, tags: order.map((t) => t.tag) }, spec, rawHeight, parts: partReport };
 }

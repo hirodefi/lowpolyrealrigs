@@ -6,9 +6,14 @@ that drops straight into Three.js, Blender, Godot, Unity (glTFast), Unreal, Baby
 - **No external APIs, no AI models, no GPU.** Everything is classic geometry that runs in the browser in ~50–100 ms.
 - **Human-shaped:** the body follows an averaged human template (sloped shoulders, chest/waist/hip curve, a slim neck under a defined jaw, rounded skull with nose, eyes, brows and ears, mitten hands with a thumb, heel-to-toe shoes), sized and coloured from your photos. Men and women differ in shoulders, bust, waist, hips and neck.
 - **Hair and clothes:** short, bob, long (down the back, framing the face) or ponytail hair; trousers, shorts, an A-line skirt (flares from the waist) or a straight knee-length skirt; T-shirt or tank top (straps over bare shoulders), scoop necklines, shirt collar, optional tie, sleeve cuffs and hems; flat shoes or heels. All auto-detected from the photos, or chosen by hand.
-- **Crowd-ready export:** one skinned mesh, a 21-bone humanoid skeleton, flat colour materials named `Skin`, `Hair`, `Top`, `Bottom`, `Shoes` (one primitive each, no textures, so a crowd can re-dress each person), plus `Accent` (collar / tie, only when present) and `Eyes`, which a bake keeps as fixed colours; clips `idle`, `walk`, `run`, `sit`, `wave`.
+- **Crowd-ready export:** one skinned mesh, a 21-bone humanoid skeleton, flat colour materials named `Skin`, `Hair`, `Top`, `Bottom`, `Shoes` (one primitive each, no textures, so a crowd can re-dress each person), plus `Accent` (collar, tie, belt), `Trim` (soles, buttons, buckles, frames) and `Eyes`, which a bake keeps as fixed colours (each only when present); clips `idle`, `walk`, `run`, `sit`, `wave`.
 - **Grounded motion:** walk and run follow human gait curves; the feet never sink into or float above the floor, and each locomotion clip stores its ground speed in `extras.speed` (m/s), so the character can be moved at the matching speed without foot sliding.
-- **Validated output:** every GLB passes the official Khronos glTF validator with 0 errors and 0 warnings.
+- **Validated output:** every GLB passes the official Khronos glTF validator with 0 errors and 0 warnings, and a
+  **pose audit** proves nothing passes through anything (hands through the body, knees through knees, legs through a
+  skirt, parts floating off the body) in every clip.
+- **Any character, by Claude:** the `character` skill (`.claude/skills/character/`) turns a character image or a few
+  words into a spec of body, clothes, colours and real parts (belts, soles, collars, buttons, hair locks, glasses...),
+  then builds, audits, compares and reviews it. See [Character skill](#character-skill) below.
 
 ## Run it
 
@@ -28,17 +33,58 @@ Before building, the **input checklist** tests the images against the input cont
 backdrop, cropping, figure size, matching scale across views, arms and legs separated, a standing (not mid-stride)
 profile, and a true back view. Failures block the build; warnings explain which part of the result to distrust.
 
-Ready-made files for a quick bake test are in `examples/` (regenerate with `node tools/make-examples.mjs`): a man
+Ready-made files for a quick bake test are in `examples/` (regenerate with `node tools/make-examples.mjs`, and
+`spec_*.glb` are the character specs in `examples/specs/`, built with `node tools/build-specs.mjs`): a man
 with short hair, a man in a shirt and tie, a woman with long hair and an A-line skirt, a woman in a tank top, straight
 knee skirt and heels, a woman with a ponytail and trousers, a woman with a bob and a skirt, a child, and
 `woman_reference_tank_shorts.glb`, built from the three reference views in `test/fixtures/woman/`.
 
 Triangle budget: Low ~2,050–2,200, Medium ~2,300–2,700 (every style combination stays at or under 2,700), High ~3,500.
 
+## Character skill
+
+In Claude Code, in this repository, ask for a character in your own words or point at an image:
+
+> Make a crowd character from test/fixtures/woman/ (front, side, back).
+> A middle-aged office worker: short dark hair, white shirt with a collar, navy trousers, brown belt, glasses.
+
+Claude follows `.claude/skills/character/SKILL.md`: it reads the image or description, seeds a spec from the reference
+views when there are any (measured body type, styles and colours), writes the parts list within the triangle budget,
+builds it, and reviews a sheet of the reference next to the model, close-ups (face, chest, hand, feet) and motion
+frames (walk, run, sit, wave) before handing over the GLB. The tools also run on their own:
+
+```bash
+node .claude/skills/character/scripts/character.mjs catalog                       # parts, parameters, costs
+node .claude/skills/character/scripts/character.mjs seed --ref test/fixtures/woman --out spec.json
+node .claude/skills/character/scripts/character.mjs build spec.json --ref test/fixtures/woman
+#   -> out/characters/<name>/model.glb, sheet.png, overlay_*.png, report.txt
+node tools/build-specs.mjs                                                        # every examples/specs/*.json
+```
+
+A spec is plain JSON (`examples/specs/`, format in `.claude/skills/character/references/spec.md`):
+
+```json
+{ "name": "office_man", "body": "male", "hair": "short", "top": "tshirt", "bottom": "trousers", "detail": "low",
+  "colors": { "Top": [236, 238, 242], "Bottom": [44, 48, 60], "Accent": [70, 44, 30] },
+  "parts": [{ "part": "collar" }, { "part": "buttons", "count": 4 }, { "part": "belt" }, { "part": "glasses", "style": "square" }] }
+```
+
+The method - many small purposeful parts from a few primitives, each sitting on another, then proved by an audit and
+reviewed close up - is adapted from [Anatomy](https://github.com/wheresryan22/anatomy) by Ryan (@wheresryan22, MIT),
+which builds explanatory machines as isometric SVG; here the parts are mesh geometry in a rigged GLB.
+
+| Piece | File | What it does |
+|---|---|---|
+| Parts kit | `public/core/kit.js` | Primitives (`lathe`, `tube`, `loop`, `prism`, `box`, `ball`) that add skinned triangles, and body surfaces (`surface(rings)`: point, normal, skin weights, ring at a height) so parts sit on the body and move with it. |
+| Parts catalog | `public/core/parts/` | `belt`, `soles`, `collar`, `buttons`, `hairLocks`, `fringe`, `glasses`, `watch`, each with defaults, a material from the contract and a triangle cost. |
+| Spec builder | `public/core/fromSpec.js` | Validates a spec, builds it (template proportions, or measured ones with reference images) and reports the triangle budget per part. |
+| Pose audit | `public/core/audit.js` | CPU-skins the mesh at sampled frames of every clip and tests limb, torso and skirt cores (bind-pose contact at the joints is allowed); also floor contact and floating parts. |
+| Studio | `test/lib/studio.js` | Browser side of the skill: seed, build, compare with the references, review sheet. |
+
 ## Tests
 
 ```bash
-npm test             # Node: all detail levels, body types and clothing styles, Khronos validator, skinning, crowd format, triangle budget
+npm test             # Node: detail levels, body types, clothing styles, every spec and catalog part; Khronos validator, skinning, crowd format, budget, pose audit
 npm run bench        # Browser: fidelity benchmark with ground truth (below), writes out/benchmark/
 npm run test:e2e     # Browser (Playwright/Chromium): drives the real UI, saves screenshots to out/
 ```
@@ -68,7 +114,7 @@ images ─► silhouette ─► measurements ─► template body ─► skeleto
 | Measure | `public/core/measure.js` | Detects the neck, shoulders, crotch, arm direction and thickness, and depth/facing from the side view. Samples one clean colour per region (face, hair, top, trousers, shoes) and finds the hem, sleeve and trouser length (sleeveless = tank), the neckline and an accent colour (collar / tie trim), the hairline, hair length and width (short / bob / long / ponytail, from the back view), heels (a post under the heel in profile) and skirts (a step in width at the hem). |
 | Template | `public/core/template.js` | Averaged body proportions and cross-section shapes for men, women and children (see below). |
 | Build | `public/core/builder.js` | Places 21 joints from the template's landmarks, then lofts torso, neck and head, arms, legs and feet from template rings, scaled ring by ring to the photo's measured widths and depths (within human limits). Adds a nose, eyes, brows, ears, thumbs, a collar or tank straps, a tie, clothing lips, heels, the hair style and a skirt when needed. Clothing edges (necklines, armholes) get their own ring so colours change along a clean line. Each ring knows its bone(s), so skin weights are exact and blend smoothly across joints; skirt vertices follow both thighs so legs never cut through. |
-| Animate | `public/core/animation.js` | `walk` and `run` from keyframed gait curves (hip, knee, ankle, toe, pelvis turn/tilt/sway, torso twist, arm swing), with forward kinematics keeping the feet on the floor. Also a breathing `idle`, a held `sit` and a `wave`. |
+| Animate | `public/core/animation.js` | `walk` and `run` from keyframed gait curves (hip, knee, ankle, toe, pelvis turn/tilt/sway, torso twist, arm swing), with forward kinematics keeping the feet on the floor; skirts shorten the stride (a straight knee skirt more than an A-line). Also a breathing `idle`, a held `sit` and a `wave`. |
 | Export | `public/core/glb.js` | Hand-written glTF 2.0 binary writer. No dependencies. |
 
 The `core/` modules are plain ES modules with no dependencies and no DOM use, so they also run in Node (see `test/selftest.js`).

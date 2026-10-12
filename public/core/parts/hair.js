@@ -1,0 +1,63 @@
+// Hair parts: locks that fall over the front of the shoulders, and fringe locks
+// sweeping across the forehead. Both sit outside the hair shell.
+import { add, sub, mul, norm, lerp, clamp } from '../mesh.js';
+import { tube } from '../kit.js';
+
+const FRONT = Math.PI / 2;
+
+/** Head -> Chest weights by height (a lock follows the head above the neck). */
+const headToChest = (ctx) => (q) => {
+  const y = q[1], n = ctx.land.neck, b = 0.03 * ctx.H;
+  const k = clamp((y - (n - b)) / (2 * b), 0, 1);
+  return k >= 1 ? { Head: 1 } : k <= 0 ? { Chest: 1 } : { Head: k, Chest: 1 - k };
+};
+
+export const hair = {
+  hairLocks: {
+    about: 'Locks of long hair falling from beside the face over the front of the shoulders onto the chest (like hair pulled forward).',
+    defaults: { perSide: 1, length: 0.16, width: 0.02, material: 'Hair', spread: 0 },
+    cost: '~40 per lock',
+    build(ctx, p) {
+      const { mb, H, surf, land } = ctx;
+      const Hd = surf.head, T = surf.torso;
+      mb.mat = () => p.material;
+      for (const sx of [1, -1]) for (let j = 0; j < p.perSide; j++) {
+        const off = p.perSide === 1 ? 0 : (j / (p.perSide - 1) - 0.5) * 0.35; // spread of several locks
+        const tH = FRONT - sx * (1.05 + off + p.spread);             // side-front of the head
+        const sTop = Hd.sAtY(land.eye), cH = Hd.centre(sTop);
+        const start = add(cH, mul(sub(Hd.point(sTop, tH), cH), 1.1));
+        // Beside the jaw, then over the front of the shoulder, then down the chest.
+        const sJaw = Hd.sAtY(land.neck + 0.035 * H), cJ = Hd.centre(sJaw);
+        const jaw = add(cJ, mul(sub(Hd.point(sJaw, tH), cJ), 1.12));
+        const onChest = (y, tt) => { const s = T.sAtY(y); return add(T.point(s, tt), mul(T.normal(s, tt), p.width * H * 0.25 + 0.004 * H)); }; // lies on the body
+        const tT = FRONT - sx * (0.95 + off); // over the front of the shoulder, towards the arm
+        const yEnd = land.neck - p.length * H;
+        const path = [start, jaw, onChest(land.neck - 0.035 * H, tT), onChest(lerp(land.neck, yEnd, 0.6), tT + sx * 0.08), onChest(yEnd, tT + sx * 0.12)];
+        const r = p.width * H;
+        tube(mb, path, [[r * 0.8, r * 0.35], [r, r * 0.35], [r, r * 0.3], [r * 0.75, r * 0.25], [r * 0.3, r * 0.15]], 4, headToChest(ctx), { up: [0, 0, 1] });
+      }
+    },
+  },
+
+  fringe: {
+    about: 'Locks sweeping from the parting across the forehead to the temples (side-swept fringe). side: 1 = towards the character\'s left, -1 right.',
+    defaults: { count: 2, side: 1, width: 0.015, material: 'Hair' },
+    cost: '~32 per lock',
+    build(ctx, p) {
+      const { mb, H, surf, land } = ctx;
+      const Hd = surf.head;
+      mb.mat = () => p.material;
+      const shell = (y, t, k) => { const s = Hd.sAtY(y), c = Hd.centre(s); return add(c, mul(sub(Hd.point(s, t), c), k)); };
+      for (let i = 0; i < p.count; i++) {
+        const f = p.count === 1 ? 0.5 : i / (p.count - 1);
+        const yTop = land.top - 0.03 * H - f * 0.012 * H;
+        const t0 = FRONT - p.side * 0.15, t1 = FRONT - p.side * (0.75 + 0.35 * f);
+        const yEnd = land.eye + 0.03 * H + f * 0.012 * H;
+        // The tip tucks back into the hair shell at the temple.
+        const path = [0, 0.33, 0.66, 1].map((k) => shell(lerp(yTop, yEnd, k), lerp(t0, t1, k), lerp(1.13, 1.06, k * k) + 0.015 * Math.sin(k * Math.PI)));
+        const r = p.width * H;
+        tube(mb, path, [[r * 0.6, r * 0.25], [r, r * 0.3], [r * 0.85, r * 0.28], [r * 0.3, r * 0.15]], 4, { Head: 1 }, { up: norm(sub(path[1], Hd.centre(Hd.sAtY(path[1][1])))) });
+      }
+    },
+  },
+};

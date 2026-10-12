@@ -29,7 +29,7 @@ export function generateCharacter(images, opts = {}) {
     err.validation = validation;
     throw err;
   }
-  const character = buildCharacter(spec, { detail: opts.detail, body: opts.body, preset: opts.preset, hair: opts.hair, bottom: opts.bottom, top: opts.top, shoes: opts.shoes, tie: opts.tie, accentColor: opts.accentColor, proportions: opts.proportions });
+  const character = buildCharacter(spec, { detail: opts.detail, body: opts.body, preset: opts.preset, hair: opts.hair, bottom: opts.bottom, top: opts.top, shoes: opts.shoes, tie: opts.tie, accentColor: opts.accentColor, proportions: opts.proportions, parts: opts.parts, palette: opts.palette, neckline: opts.neckline, shortsLength: opts.shortsLength });
   const animations = opts.animations === false ? [] : makeAnimations(character);
   const glb = exportGLB(character, animations, { name: opts.name });
   return {
@@ -47,6 +47,7 @@ export function generateCharacter(images, opts = {}) {
       top: character.topStyle,
       heels: character.heels,
       materials: character.mesh.groups.map((g) => g.material),
+      parts: character.parts,
       clips: animations.map((a) => a.name),
       bytes: glb.byteLength,
       ms: Math.round(now() - t0),
