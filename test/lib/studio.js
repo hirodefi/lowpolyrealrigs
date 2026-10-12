@@ -57,6 +57,33 @@ async function compare(refs, glb, files) {
   return out;
 }
 
+/**
+ * Manual measuring aid: for one view, the figure's spans (body pixels) per row,
+ * every `step` of the figure height, with each span's colour (median of its
+ * middle half). Heights h are fractions of the figure from the floor; x is
+ * relative to the figure's centre, as a fraction of its height.
+ */
+export async function spans(ref, view = 'front', step = 0.01) {
+  const refs = await loadRefs(ref);
+  const img = refs?.[view];
+  if (!img) throw new Error(`no ${view} view`);
+  const S = analyzeImage(img, { raw: true });
+  const { x0, x1, y0, y1 } = S.bbox, Hp = y1 - y0, cx = (x0 + x1) / 2, d = img.data;
+  const rows = [];
+  for (let v = 0; v <= 1.0001; v += step) {
+    const y = Math.min(y1, Math.round(y0 + v * Hp)), runs = [];
+    for (const [a, b] of S.runs[y] || []) {
+      if (b - a < 2) continue;
+      const px = [];
+      for (let x = a + Math.floor((b - a) / 4); x <= b - Math.floor((b - a) / 4); x++) { const i = (y * img.width + x) * 4; px.push([d[i], d[i + 1], d[i + 2]]); }
+      px.sort((p, q) => p[0] + p[1] + p[2] - (q[0] + q[1] + q[2]));
+      runs.push({ x0: +((a - cx) / Hp).toFixed(3), x1: +((b - cx) / Hp).toFixed(3), rgb: px[px.length >> 1] });
+    }
+    rows.push({ h: +(1 - v).toFixed(3), runs });
+  }
+  return { view, heightPx: Hp, rows };
+}
+
 /** Build a spec; with ref images the body is measured from them. */
 export async function build(spec, ref) {
   const refs = await loadRefs(ref);
@@ -82,8 +109,12 @@ export async function reviewSheet(glb, refs, title) {
   const scene = new THREE.Scene();
   scene.background = new THREE.Color(0xdfe3ea);
   scene.add(gltf.scene);
-  scene.add(new THREE.HemisphereLight(0xffffff, 0x8890a0, 1.7));
-  const sun = new THREE.DirectionalLight(0xffffff, 2.0); sun.position.set(2, 4, 3); scene.add(sun);
+  // Soft studio light (like the reference renders): a bright sky/ground fill, a
+  // gentle key and a rim, so flat facets read as form rather than as blotches.
+  scene.add(new THREE.HemisphereLight(0xffffff, 0xc4c8d2, 2.3));
+  const key = new THREE.DirectionalLight(0xffffff, 1.15); key.position.set(1.5, 3, 4); scene.add(key);
+  const fill = new THREE.DirectionalLight(0xffffff, 0.45); fill.position.set(-3, 1.5, 1); scene.add(fill);
+  const rim = new THREE.DirectionalLight(0xffffff, 0.5); rim.position.set(0, 3, -4); scene.add(rim);
   const canvas = document.createElement('canvas');
   const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, preserveDrawingBuffer: true });
   renderer.setSize(TW, TH);

@@ -429,7 +429,7 @@ function measureLook({ F, cx, H, back, spec, neckV, shoulderV, crotchV, arms, sh
   // Face: cheeks/mouth band in the lower half of the head. Hair: the crown.
   const hv = (f) => px(neckV * f);
   const skinFace = regionColor(F, cx - headHalf * 0.3, hv(0.62), cx + headHalf * 0.3, hv(0.8));
-  const hair = regionColor(F, cx - headHalf * 0.5, hv(0.02), cx + headHalf * 0.5, hv(0.15)) || skinFace || [80, 60, 40];
+  let hair = regionColor(F, cx - headHalf * 0.5, hv(0.02), cx + headHalf * 0.5, hv(0.15)) || skinFace || [80, 60, 40];
   let skin = skinFace || [225, 180, 140];
   const hands = []; // hand colours are a second skin sample
   let top = regionColor(F, cx - shoulderHalf * 0.4, px(shoulderV + 0.05), cx + shoulderHalf * 0.4, px(shoulderV + 0.13)) || [120, 120, 130];
@@ -446,7 +446,7 @@ function measureLook({ F, cx, H, back, spec, neckV, shoulderV, crotchV, arms, sh
     if (c) bottom = c;
   }
   const footRun = F.runNear(px(0.985), cx + shoulderHalf * 0.45);
-  const shoes = (footRun && regionColor(F, footRun[0], px(0.965), footRun[1], px(0.998))) || [40, 40, 45];
+  let shoes = (footRun && regionColor(F, footRun[0], px(0.965), footRun[1], px(0.998))) || [40, 40, 45];
 
   // Hem: scanning the torso centre line downwards, the biggest colour jump
   // between chest and crotch is where the top ends. Default = hip.
@@ -619,6 +619,36 @@ function measureLook({ F, cx, H, back, spec, neckV, shoulderV, crotchV, arms, sh
     if (bestD < 80) accent = null;
   }
 
+  // Material colours from the lit side: a reference render (or photo) is shaded,
+  // so the plain average bakes shadow into the material and the renderer then
+  // shades it again. Assign each interior pixel to its nearest material colour
+  // and take the mean of a brightness band (flat-lit inputs
+  // are unchanged: every percentile is the same colour).
+  {
+    const finals = { skin, hair, top, bottom, shoes };
+    const groups = Object.fromEntries(Object.keys(finals).map((k) => [k, []]));
+    const { data } = F.img;
+    for (let y = F.bbox.y0; y <= F.bbox.y1; y += 2) for (let x = F.bbox.x0; x <= F.bbox.x1; x += 2) {
+      if (!F.on(x, y) || !F.on(x - 2, y) || !F.on(x + 2, y) || !F.on(x, y - 2) || !F.on(x, y + 2)) continue;
+      const i = (y * F.w + x) * 4, c = [data[i], data[i + 1], data[i + 2]];
+      let best = null, bd = 70;
+      const feet = y > F.bbox.y1 - F.heightPx * 0.05; // shoes only where shoes are
+      for (const [k, f] of Object.entries(finals)) { if ((k === 'shoes') !== feet) continue; const d = cdist(c, f); if (d < bd) { bd = d; best = k; } }
+      if (best) groups[best].push(c);
+    }
+    // Matte cloth and skin: the lit band. Glossy hair and shoes: the middle band
+    // (their brightest pixels are highlights, not colour).
+    const lit = (px, lo = 0.6, hi = 0.9) => {
+      px.sort((a, b) => (a[0] + a[1] + a[2]) - (b[0] + b[1] + b[2]));
+      const band = px.slice(Math.floor(px.length * lo), Math.max(Math.floor(px.length * lo) + 1, Math.floor(px.length * hi)));
+      return [0, 1, 2].map((j) => band.reduce((s2, c) => s2 + c[j], 0) / band.length);
+    };
+    if (groups.skin.length > 30) skin = lit(groups.skin);
+    if (groups.top.length > 30) top = lit(groups.top);
+    if (groups.bottom.length > 30) bottom = lit(groups.bottom);
+    if (groups.shoes.length > 12 && cdist(shoes, hair) > 30) shoes = lit(groups.shoes, 0.4, 0.7);
+    if (groups.hair.length > 30 && hasHair) hair = lit(groups.hair, 0.4, 0.7);
+  }
   const color = (c) => c.map((x) => Math.round(clamp(x, 0, 255)));
   return {
     skin: color(skin), hair: color(hair), top: color(top), bottom: color(bottom), shoes: color(shoes),

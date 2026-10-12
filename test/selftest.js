@@ -32,8 +32,9 @@ for (const detail of ['low', 'medium', 'high']) {
   check(!g.images && !g.textures && !g.samplers, 'no images / textures in the file');
   const matNames = g.materials.map((m) => m.name);
   check(['Skin', 'Hair', 'Top', 'Bottom', 'Shoes'].every((n) => matNames.includes(n)), `materials named Skin/Hair/Top/Bottom/Shoes (got ${matNames.join(',')})`);
-  // Extra groups the bake keeps as fixed colours: Accent (collar / tie / belt), Trim (soles, buttons, frames), Eyes.
-  check(matNames.every((n) => ['Skin', 'Hair', 'Top', 'Bottom', 'Shoes', 'Accent', 'Trim', 'Eyes'].includes(n)), 'no materials outside Skin/Hair/Top/Bottom/Shoes/Accent/Trim/Eyes');
+  // Extra groups the bake keeps as fixed colours: Accent (collar / tie / belt), Trim (soles, buttons, frames), Eyes, EyeWhite, Lips.
+  const FIXED = ['Accent', 'Trim', 'Eyes', 'EyeWhite', 'Lips'];
+  check(matNames.every((n) => ['Skin', 'Hair', 'Top', 'Bottom', 'Shoes', ...FIXED].includes(n)), `no materials outside Skin/Hair/Top/Bottom/Shoes/${FIXED.join('/')}`);
   check(g.materials.every((m) => m.pbrMetallicRoughness?.baseColorFactor?.length === 4 && !m.pbrMetallicRoughness.baseColorTexture), 'every material is a flat baseColorFactor');
   check(g.meshes.length === 1 && g.skins.length === 1 && g.nodes.filter((n) => n.mesh != null).length === 1, 'exactly one skinned mesh + one skin');
   check(g.meshes[0].primitives.length === matNames.length && g.meshes[0].primitives.every((p) => !p.targets), 'one primitive per material, no morph targets');

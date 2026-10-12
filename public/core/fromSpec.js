@@ -5,7 +5,8 @@
 // written by hand or by Claude (the character skill) from an image or a
 // description. With reference images, the measured photo proportions shape the
 // body; without, realistic template proportions are used.
-import { generateCharacter } from './pipeline.js';
+import { generateCharacter, generateFromBody } from './pipeline.js';
+import { bodyFromMeasurements, checkMeasurements } from './manual.js';
 import { sampleImages } from './samples.js';
 import { CATALOG } from './parts/index.js';
 
@@ -13,7 +14,7 @@ const KEYS = {
   name: 'string', body: ['male', 'female', 'child'], height: 'number', build: ['measured', 'slim', 'average', 'broad'],
   detail: ['low', 'medium', 'high'], hair: ['short', 'bob', 'long', 'ponytail', 'bald', 'auto'],
   top: ['tshirt', 'tank', 'auto'], neckline: ['crew', 'scoop', 'v', 'auto'], bottom: ['trousers', 'shorts', 'skirt', 'pencil', 'auto'], shoes: ['flat', 'heels', 'auto'],
-  shortsLength: ['short', 'mid', 'long'], tie: 'boolean', colors: 'object', parts: 'array', budget: 'number', notes: 'string', animations: 'boolean',
+  shortsLength: ['short', 'mid', 'long'], tie: 'boolean', measurements: 'object', colors: 'object', parts: 'array', budget: 'number', notes: 'string', animations: 'boolean',
 };
 const COLOR_KEYS = ['Skin', 'Hair', 'Top', 'Bottom', 'Shoes', 'Accent', 'Trim', 'Eyes'];
 
@@ -30,6 +31,7 @@ export function checkSpec(spec) {
     else if (!Array.isArray(c) || c.length !== 3 || c.some((x) => !(x >= 0 && x <= 255))) errs.push(`colour "${k}" must be [r, g, b] in 0..255`);
   }
   for (const [i, p] of (spec.parts || []).entries()) if (!p || !CATALOG[p.part]) errs.push(`parts[${i}]: unknown part "${p?.part}" (catalog: ${Object.keys(CATALOG).join(', ')})`);
+  if (spec.measurements) for (const e of checkMeasurements(spec.measurements)) errs.push('measurements: ' + e);
   return errs;
 }
 
@@ -45,10 +47,16 @@ export function buildFromSpec(spec, images = null) {
   const C = spec.colors || {};
   const colors = Object.fromEntries(['Skin', 'Hair', 'Top', 'Bottom', 'Shoes'].filter((k) => C[k]).map((k) => [k.toLowerCase(), C[k]]));
   const palette = Object.fromEntries(['Accent', 'Trim', 'Eyes'].filter((k) => C[k]).map((k) => [k, C[k]]));
-  const res = generateCharacter(images || sampleImages(), {
+  const H = spec.height ?? 1.7;
+  // Manual measurements (written by Claude or a person from the reference views)
+  // shape the body directly; otherwise images are measured, or the template is used.
+  const build = spec.measurements
+    ? (o) => generateFromBody(bodyFromMeasurements(spec.measurements, H, { skin: [225, 180, 140], hair: [80, 60, 40], top: [120, 120, 130], bottom: [60, 70, 100], shoes: [40, 40, 45] }, spec), o)
+    : (o) => generateCharacter(images || sampleImages(), o);
+  const res = build({
     name: spec.name, height: spec.height ?? 1.7, body: spec.body, preset: spec.build ?? 'measured', detail: spec.detail ?? 'medium',
-    hair: spec.hair, top: spec.top, neckline: spec.neckline ?? (images ? 'auto' : spec.top === 'tank' ? 'scoop' : 'crew'), bottom: spec.bottom, shoes: spec.shoes, tie: spec.tie, shortsLength: { short: 0.08, mid: 0.2, long: 0.34 }[spec.shortsLength], animations: spec.animations,
-    colors, palette, parts: spec.parts || [], proportions: images ? undefined : 'template',
+    hair: spec.hair, top: spec.top, neckline: spec.neckline ?? (images || spec.measurements?.clothes?.neckline != null ? 'auto' : spec.top === 'tank' ? 'scoop' : 'crew'), bottom: spec.bottom, shoes: spec.shoes, tie: spec.tie, shortsLength: { short: 0.08, mid: 0.2, long: 0.34 }[spec.shortsLength], animations: spec.animations,
+    colors, palette, parts: spec.parts || [], proportions: images || spec.measurements ? undefined : 'template',
   });
   const parts = res.stats.parts || [];
   const total = res.stats.triangles, partTris = parts.reduce((s, p) => s + p.triangles, 0);

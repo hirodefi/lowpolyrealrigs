@@ -7,6 +7,11 @@
 //   node .claude/skills/character/scripts/character.mjs seed --ref <dir> | --sheet <file> | --front <f> [--side <f>] [--back <f>]  [--out spec.json]
 //       Measure reference images and write a draft spec (body type, styles, colours).
 //
+//   node .claude/skills/character/scripts/character.mjs spans --ref <dir> [--view front|side|back] [--step 0.01] [--from 1] [--to 0]
+//       Manual measuring aid: per row of a view, the figure's spans (x from the
+//       centre and h from the floor, as fractions of the figure height) and the
+//       colour of each span, to read off widths, depths and landmarks.
+//
 //   node .claude/skills/character/scripts/character.mjs build <spec.json> [--ref <dir> | --sheet <file> | --front ...] [--out <dir>]
 //       Build the spec (shaped by the references if given), then write to <dir>
 //       (default out/characters/<name>/): model.glb, sheet.png (review sheet),
@@ -69,6 +74,13 @@ if (cmd === 'catalog') {
   console.log(`draft spec -> ${out}\n${JSON.stringify(r.spec, null, 2)}`);
   if (r.notes?.length) console.log('notes: ' + r.notes.join('; '));
   for (const i of r.validation?.issues || []) console.log(`input ${i.level}: [${i.view}] ${i.id} - ${i.message}`);
+} else if (cmd === 'spans') {
+  const ref = refArgs();
+  if (!ref) { console.error('spans needs --ref <dir>, --sheet <file> or --front/--side/--back <file>'); process.exit(2); }
+  const view = flag('view') || 'front', step = Number(flag('step') || 0.01), hi = Number(flag('from') ?? 1), lo = Number(flag('to') ?? 0);
+  const r = await withBrowser((page) => page.evaluate(async ([ref, view, step]) => (await import('/test/lib/studio.js')).spans(ref, view, step), [ref, view, step]));
+  console.log(`${view} view, figure ${r.heightPx}px tall. h = height from the floor, x = from the centre (fractions of the figure height); colour = span median`);
+  for (const row of r.rows) if (row.h <= hi + 1e-9 && row.h >= lo - 1e-9) console.log(`h ${row.h.toFixed(2)} | ` + row.runs.map((q) => `${q.x0 >= 0 ? '+' : ''}${q.x0.toFixed(3)}..${q.x1 >= 0 ? '+' : ''}${q.x1.toFixed(3)} (${q.rgb.join(',')})`).join(' | '));
 } else if (cmd === 'build') {
   const file = argv[1];
   if (!file || !existsSync(file)) { console.error('usage: character.mjs build <spec.json> [--ref <dir>] [--out <dir>]'); process.exit(2); }

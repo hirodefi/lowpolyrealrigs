@@ -29,6 +29,16 @@ export function generateCharacter(images, opts = {}) {
     err.validation = validation;
     throw err;
   }
+  return finish(spec, opts, t0, { silhouettes: sil, validation });
+}
+
+/** Build from a body spec that did not come from images (manual measurements, manual.js). */
+export function generateFromBody(spec, opts = {}) {
+  return finish(spec, opts, now(), { silhouettes: null, validation: [] });
+}
+
+function finish(spec, opts, t0, { silhouettes, validation }) {
+  for (const [k, c] of Object.entries(opts.colors || {})) spec.look[k] = c;
   const character = buildCharacter(spec, { detail: opts.detail, body: opts.body, preset: opts.preset, hair: opts.hair, bottom: opts.bottom, top: opts.top, shoes: opts.shoes, tie: opts.tie, accentColor: opts.accentColor, proportions: opts.proportions, parts: opts.parts, palette: opts.palette, neckline: opts.neckline, shortsLength: opts.shortsLength });
   const animations = opts.animations === false ? [] : makeAnimations(character);
   const glb = exportGLB(character, animations, { name: opts.name });
@@ -36,7 +46,7 @@ export function generateCharacter(images, opts = {}) {
     glb,
     character,
     animations,
-    silhouettes: sil,
+    silhouettes,
     validation,
     stats: {
       triangles: character.mesh.triangles,

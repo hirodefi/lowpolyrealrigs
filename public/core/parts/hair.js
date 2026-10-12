@@ -14,8 +14,8 @@ const headToChest = (ctx) => (q) => {
 
 export const hair = {
   hairLocks: {
-    about: 'Locks of long hair falling from beside the face over the front of the shoulders onto the chest (like hair pulled forward).',
-    defaults: { perSide: 1, length: 0.16, width: 0.02, material: 'Hair', spread: 0 },
+    about: 'Locks of long hair falling from behind the ears over the front of the shoulders onto the chest (like hair pulled forward).',
+    defaults: { perSide: 1, length: 0.16, width: 0.012, material: 'Hair', spread: 0 }, // width = half-width
     cost: '~40 per lock',
     build(ctx, p) {
       const { mb, H, surf, land } = ctx;
@@ -23,16 +23,22 @@ export const hair = {
       mb.mat = () => p.material;
       for (const sx of [1, -1]) for (let j = 0; j < p.perSide; j++) {
         const off = p.perSide === 1 ? 0 : (j / (p.perSide - 1) - 0.5) * 0.35; // spread of several locks
-        const tH = FRONT - sx * (1.05 + off + p.spread);             // side-front of the head
+        const tH = FRONT - sx * (1.78 + off + p.spread);             // from behind the ear (the face stays clear)
         const sTop = Hd.sAtY(land.eye), cH = Hd.centre(sTop);
-        const start = add(cH, mul(sub(Hd.point(sTop, tH), cH), 1.1));
-        // Beside the jaw, then over the front of the shoulder, then down the chest.
-        const sJaw = Hd.sAtY(land.neck + 0.035 * H), cJ = Hd.centre(sJaw);
-        const jaw = add(cJ, mul(sub(Hd.point(sJaw, tH), cJ), 1.12));
-        const onChest = (y, tt) => { const s = T.sAtY(y); return add(T.point(s, tt), mul(T.normal(s, tt), p.width * H * 0.25 + 0.004 * H)); }; // lies on the body
-        const tT = FRONT - sx * (0.95 + off); // over the front of the shoulder, towards the arm
+        const start = add(cH, mul(sub(Hd.point(sTop, tH), cH), 1.08));
+        // Straight down beside the jaw, then onto the front of the chest at about
+        // the head's half-width, then down the chest: hair falls, it doesn't wrap.
+        const sJaw = Hd.sAtY(land.neck + 0.02 * H), cJ = Hd.centre(sJaw);
+        const jaw = add(cJ, mul(sub(Hd.point(sJaw, FRONT - sx * 1.68), cJ), 1.12)); // just behind the jaw, never over the cheek
+        const xLock = Math.abs(start[0]) * 1.22 * (1.0 + off * 0.5) * (1 + p.spread); // just outside the face and the straps
+        const onChest = (y) => {
+          const s = T.sAtY(y);
+          let best = FRONT, d = Infinity;
+          for (let t = FRONT; Math.abs(t - FRONT) < Math.PI / 2; t -= sx * 0.02) { const q = T.point(s, t); const e = Math.abs(Math.abs(q[0]) - xLock); if (e < d) { d = e; best = t; } }
+          return add(T.point(s, best), mul(T.normal(s, best), p.width * H * 0.25 + 0.004 * H));
+        };
         const yEnd = land.neck - p.length * H;
-        const path = [start, jaw, onChest(land.neck - 0.035 * H, tT), onChest(lerp(land.neck, yEnd, 0.6), tT + sx * 0.08), onChest(yEnd, tT + sx * 0.12)];
+        const path = [start, jaw, onChest(land.neck - 0.035 * H), onChest(lerp(land.neck, yEnd, 0.6)), onChest(yEnd)];
         const r = p.width * H;
         tube(mb, path, [[r * 0.8, r * 0.35], [r, r * 0.35], [r, r * 0.3], [r * 0.75, r * 0.25], [r * 0.3, r * 0.15]], 4, headToChest(ctx), { up: [0, 0, 1] });
       }

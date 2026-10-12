@@ -307,6 +307,39 @@ ones with) and returns the GLB, stats and a per-part budget table; over budget i
 Defaults are chosen so text-only specs look right: a crew neck unless stated (the demo drawing's deep neckline gave
 shirts a V of bare skin), a scoop for tank tops, mid-thigh shorts.
 
+### Manual measurements (Claude measures, the builder trusts)
+
+The strongest lever on likeness turned out to be **who measures the reference**. The automatic measurement is
+heuristic (hair over the head, loose clothes and arms near the body confuse it) and the template cannot know a
+stylised character's proportions. So the spec accepts a `measurements` block written by Claude (or a person) from
+the reference views (`public/core/manual.js`, format in `.claude/skills/character/references/spec.md`):
+
+- `character.mjs spans` prints, per row of a view, the figure's spans and each span's colour; Claude decides what each
+  span is (torso vs arm, skin vs hair, top vs shorts) and writes landmarks, torso widths and depths, leg sections,
+  head and face widths, eye spacing, arm angle and length, clothing edges.
+- `bodyFromMeasurements` turns them into the same body spec the automatic path produces, flagged `manual`.
+- The builder then maps **more landmarks** (ankle, knee, crotch, armpit, shoulder, neck, chin, eye) instead of only
+  crotch and neck, uses **wider trust limits** (a 0.5 waist/hip hourglass is allowed, the automatic path clamps to
+  0.85-1.2x the template), shapes **each head ring** from the measured face profile, places the eyes at the measured
+  spacing, and skips the template's built-in waist/hip shaping (the measurements already contain it).
+
+On the reference woman this fixed what made her look wrong: a boxy torso (her waist/hip ratio is 0.5; the template
+clamp could not get there), close-set eyes (0.017 vs her 0.024 of height), a pointed face (the visible V of the face
+was measured instead of the jaw hidden behind her hair) and her long-legged proportions.
+
+### Realism details from the same review
+
+- **Colours from the lit side.** A reference is a shaded render or photo; averaging bakes shadow into the material and
+  the renderer shades it again. Material colours are now the mean of the 60th-90th brightness percentile of their
+  pixels (40th-70th for glossy hair and shoes, whose brightest pixels are highlights). Flat-lit inputs are unchanged.
+- **Faces:** white almond eyes with a large dark iris, an upper lash line and a catch-light (a solid dark shape reads as
+  a hole); thicker arched brows; a small soft nose; lips derived from the skin colour; ears showing; a jaw tapering to
+  a softer chin; long hair falling behind the ears so the cheeks show.
+- **Pumps:** with heels the shoe covers the toes, a low band and a heel cup; the instep is bare, the toe pointed, the
+  heel slim (a shoe up to the ankle reads as a boot).
+- **Fit:** tank tops and shorts hug the body (a loose cut with a flared hem reads as a box).
+- **Budget:** medium limbs use 7 sides (from 8) to pay for the face; every variant stays at or under 2,700.
+
 ## 13. The pose audit
 
 `public/core/audit.js` proves the character moves without passing through itself, adapting Anatomy's `audit.mjs`
@@ -422,6 +455,11 @@ tools supply geometry, rigging, animation and proofs. Nothing in the tool calls 
 | Knee-length shorts on a short-shorts reference | Explicit style overrode the measured length | Measured length wins with a reference |
 | Thighs through skirts in sit/walk/run | Linear skinning follows the average thigh | Weight hand-over, ease, 10+ sides, shorter stride |
 | Skirt audit false alarms when seated | Compared at equal heights | Ring-plane projection |
+| Skin grey-brown, white top grey | Average colour includes the reference's shading | Lit-side percentile colours |
+| Boxy torso, no waist | Template clamp (0.85-1.2x) could not reach a 0.5 waist/hip | Manual measurements, trusted with wider limits |
+| Face odd and narrow | Close-set eyes; face V measured instead of the hidden jaw | Measured eye spacing; jaw widths |
+| Heels read as boots | Shoe covered the foot to the ankle | Low-cut pumps |
+| Hair "boards" hiding the straps | Lock width was a half-width (2x too wide) and too far in | Measured strand width and position |
 
 ## 18. Limits and roadmap
 
@@ -470,6 +508,7 @@ without loosening tolerances, and check the external references still report as 
 | `public/core/kit.js` | Part primitives and body surfaces |
 | `public/core/parts/` | Parts catalog |
 | `public/core/fromSpec.js` | Character spec -> GLB with budget |
+| `public/core/manual.js` | Manual measurements -> body spec |
 | `public/core/animation.js` | Clips (gait curves, FK grounding, speeds) |
 | `public/core/audit.js` | Pose audit |
 | `public/core/glb.js` | GLB writer |

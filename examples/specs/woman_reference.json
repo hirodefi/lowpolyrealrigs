@@ -1,36 +1,36 @@
 {
   "name": "woman_reference",
   "body": "female",
-  "detail": "low",
+  "detail": "medium",
   "hair": "long",
   "top": "tank",
   "bottom": "shorts",
   "shoes": "heels",
   "colors": {
     "Skin": [
-      226,
-      180,
-      147
+      251,
+      200,
+      162
     ],
     "Hair": [
-      114,
-      93,
-      90
+      117,
+      91,
+      80
     ],
     "Top": [
-      228,
-      224,
-      223
+      243,
+      241,
+      241
     ],
     "Bottom": [
-      99,
-      92,
-      90
+      102,
+      97,
+      98
     ],
     "Shoes": [
-      125,
-      113,
-      112
+      130,
+      120,
+      122
     ]
   },
   "parts": [
@@ -38,8 +38,217 @@
       "part": "hairLocks",
       "perSide": 1,
       "length": 0.15,
-      "width": 0.024
+      "width": 0.016
     }
   ],
-  "notes": "Build with the reference views: character.mjs build examples/specs/woman_reference.json --ref test/fixtures/woman. From test/fixtures/woman: long hair worn forward over both shoulders, centre part (no fringe), thin-strap tank, grey shorts, grey heels."
+  "measurements": {
+    "landmarks": {
+      "hairline": 0.955,
+      "eye": 0.915,
+      "chin": 0.857,
+      "neck": 0.842,
+      "shoulder": 0.79,
+      "armpit": 0.745,
+      "bust": 0.69,
+      "waist": 0.65,
+      "hip": 0.53,
+      "crotch": 0.515,
+      "knee": 0.325,
+      "ankle": 0.09
+    },
+    "shoulderHalfWidth": 0.097,
+    "torso": [
+      [
+        0.53,
+        0.099,
+        0.107
+      ],
+      [
+        0.56,
+        0.094,
+        0.124
+      ],
+      [
+        0.58,
+        0.087,
+        0.118
+      ],
+      [
+        0.6,
+        0.08,
+        0.11
+      ],
+      [
+        0.62,
+        0.069,
+        0.1
+      ],
+      [
+        0.65,
+        0.052,
+        0.088
+      ],
+      [
+        0.69,
+        0.07,
+        0.106
+      ],
+      [
+        0.72,
+        0.075,
+        0.104
+      ],
+      [
+        0.745,
+        0.078,
+        0.1
+      ],
+      [
+        0.79,
+        0.08,
+        0.09
+      ],
+      [
+        0.81,
+        0.06,
+        0.08
+      ]
+    ],
+    "legs": [
+      [
+        0.5,
+        0.053,
+        0.046,
+        0.105
+      ],
+      [
+        0.45,
+        0.052,
+        0.042,
+        0.096
+      ],
+      [
+        0.4,
+        0.0495,
+        0.0345,
+        0.087
+      ],
+      [
+        0.35,
+        0.046,
+        0.028,
+        0.077
+      ],
+      [
+        0.325,
+        0.046,
+        0.026,
+        0.069
+      ],
+      [
+        0.25,
+        0.0535,
+        0.0325,
+        0.074
+      ],
+      [
+        0.2,
+        0.0535,
+        0.0245,
+        0.06
+      ],
+      [
+        0.15,
+        0.052,
+        0.016,
+        0.046
+      ],
+      [
+        0.11,
+        0.0505,
+        0.0125,
+        0.039
+      ]
+    ],
+    "head": [
+      [
+        0.83,
+        0.021,
+        0.042
+      ],
+      [
+        0.845,
+        0.02,
+        0.046
+      ],
+      [
+        0.857,
+        0.028,
+        0.07
+      ],
+      [
+        0.87,
+        0.033,
+        0.095
+      ],
+      [
+        0.88,
+        0.037,
+        0.105
+      ],
+      [
+        0.89,
+        0.04,
+        0.11
+      ],
+      [
+        0.9,
+        0.043,
+        0.115
+      ],
+      [
+        0.92,
+        0.047,
+        0.12
+      ],
+      [
+        0.94,
+        0.049,
+        0.12
+      ],
+      [
+        0.96,
+        0.048,
+        0.115
+      ],
+      [
+        0.98,
+        0.04,
+        0.1
+      ]
+    ],
+    "arms": {
+      "fromVertical": 15,
+      "length": 0.35,
+      "upper": 0.041,
+      "fore": 0.034,
+      "hand": 0.031
+    },
+    "clothes": {
+      "topHem": 0.59,
+      "neckline": 0.725,
+      "bottomHem": 0.508,
+      "sleeve": 0
+    },
+    "hair": {
+      "end": 0.67
+    },
+    "notes": "Measured by Claude from test/fixtures/woman front/side/back (figure 1446 px tall): front half-widths without arms, side depths, face/neck widths from the skin/hair colour split; skull widths under the hair estimated as hair outline minus ~0.012. Jaw corners are hidden by the hair in the front view: head ring widths at chin/jaw height use the jaw width (~0.033), not the visible V of the face. Eyes: iris centres at x = +-0.024, eye width ~0.027, iris radius ~0.007 (front view, h 0.92).",
+    "face": {
+      "eyeX": 0.024,
+      "eyeWidth": 0.027,
+      "iris": 0.0068
+    }
+  },
+  "notes": "Measured by hand from test/fixtures/woman (character.mjs spans). Build with: character.mjs build examples/specs/woman_reference.json --ref test/fixtures/woman. Long hair worn forward over both shoulders from behind the ears, centre part, thin-strap tank, short grey shorts, grey heels."
 }

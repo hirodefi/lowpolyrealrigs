@@ -44,6 +44,12 @@ Work in this order. All commands run from the repository root.
    measurement you should not trust. A single photo or concept art seeds less reliably than clean views, so check its
    numbers against what you see. Without an image, write the spec by hand
    (`references/spec.md`, examples in `examples/specs/`).
+   **Then measure the reference yourself** - this is what makes a character match its reference
+   (`references/spec.md`, "Manual measurements"). Run
+   `node .claude/skills/character/scripts/character.mjs spans --ref <dir> --view front` (and `--view side`,
+   `--view back`), read the rows, decide what each span is (torso or arm, skin or hair, top or shorts), and write the
+   `measurements` block: landmarks, torso widths and depths, legs, head and face (eye spacing!), arms, clothing edges.
+   Write down any estimate you had to make (e.g. the skull under the hair) in `measurements.notes`.
 3. **Write the parts list.** Run `node .claude/skills/character/scripts/character.mjs catalog` for the parts, their
    parameters and their triangle cost. Choose parts by what reads at crowd distance first (`references/craft.md`), set
    colours for every material you use, and keep a budget line in mind: body ~2,050 (low detail) to ~2,550 (medium), so
@@ -88,12 +94,15 @@ Work in this order. All commands run from the repository root.
   than 3 cm off it.
 - **Motion is part of the character.** Skirts shorten the stride automatically; the audit proves legs stay inside
   skirts, arms out of the torso and knees apart in every clip.
+- **Measure, don't guess.** With a reference, the body, the face (eye spacing, jaw, eye height) and the clothing edges
+  come from your measurements. Most "it looks odd" problems were wrong proportions: a waist the template could not
+  narrow, close-set eyes, a face made narrow by measuring the visible V instead of the jaw.
 - **Never copy a reference image's details literally;** take its type, proportions, colours and the parts that make it
   recognisable.
 
 ## References
 
-- `references/spec.md`: the character spec format, every key, landmarks and colours.
+- `references/spec.md`: the character spec format, every key, landmarks, colours and the manual `measurements` block.
 - `references/parts.md`: the parts catalog with parameters, materials, costs and when to use each part.
 - `references/craft.md`: what makes a low-poly crowd character read as a real person; part priorities by archetype.
 - `references/verify.md`: the report, the review sheet checklist, the audit checks and what to do when one fails.
