@@ -15,6 +15,8 @@ that drops straight into Three.js, Blender, Godot, Unity (glTFast), Unreal, Baby
   words into a spec of body, clothes, colours and real parts (belts, soles, collars, buttons, hair locks, glasses...),
   then builds, audits, compares and reviews it. See [Character skill](#character-skill) below.
 
+How it works, and why: [`docs/APPROACH.md`](docs/APPROACH.md) (strategies, decisions, quality gates, lessons learned).
+
 ## Run it
 
 ```bash
