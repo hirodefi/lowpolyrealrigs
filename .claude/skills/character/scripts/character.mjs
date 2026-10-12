@@ -12,6 +12,11 @@
 //       centre and h from the floor, as fractions of the figure height) and the
 //       colour of each span, to read off widths, depths and landmarks.
 //
+//   node .claude/skills/character/scripts/character.mjs fit <spec.json> --ref <dir> [--out <dir>] [--rows]
+//       The "do it again" loop: builds the spec against the references and compares the silhouettes row by row
+//       (aligned on the feet, the height and the ankle plumb line): IoU per view, mean/max edge error per body
+//       band, flagged rows, red/cyan overlays (red = reference only, cyan = model only). Exit 1 if a gate fails.
+//
 //   node .claude/skills/character/scripts/character.mjs build <spec.json> [--ref <dir> | --sheet <file> | --front ...] [--out <dir>]
 //       Build the spec (shaped by the references if given), then write to <dir>
 //       (default out/characters/<name>/): model.glb, sheet.png (review sheet),
@@ -81,6 +86,21 @@ if (cmd === 'catalog') {
   const r = await withBrowser((page) => page.evaluate(async ([ref, view, step]) => (await import('/test/lib/studio.js')).spans(ref, view, step), [ref, view, step]));
   console.log(`${view} view, figure ${r.heightPx}px tall. h = height from the floor, x = from the centre (fractions of the figure height); colour = span median`);
   for (const row of r.rows) if (row.h <= hi + 1e-9 && row.h >= lo - 1e-9) console.log(`h ${row.h.toFixed(2)} | ` + row.runs.map((q) => `${q.x0 >= 0 ? '+' : ''}${q.x0.toFixed(3)}..${q.x1 >= 0 ? '+' : ''}${q.x1.toFixed(3)} (${q.rgb.join(',')})`).join(' | '));
+} else if (cmd === 'fit') {
+  const file = argv[1];
+  if (!file || !existsSync(file)) { console.error('usage: character.mjs fit <spec.json> --ref <dir> [--out <dir>] [--rows]'); process.exit(2); }
+  const spec = JSON.parse(readFileSync(file, 'utf8')), ref = refArgs();
+  if (!ref) { console.error('fit needs --ref <dir> (or --sheet / --front ...)'); process.exit(2); }
+  const r = await withBrowser((page) => page.evaluate(async ([spec, ref]) => (await import('/test/lib/studio.js')).fit(spec, ref), [spec, ref]));
+  const dir = resolve(flag('out') || join(ROOT, 'out/characters', spec.name || 'character'));
+  mkdirSync(dir, { recursive: true });
+  for (const [n, bytes] of Object.entries(r.files)) writeFileSync(join(dir, n), Uint8Array.from(bytes));
+  writeFileSync(join(dir, 'fit.txt'), r.report.lines.join('\n') + '\n');
+  writeFileSync(join(dir, 'fit.json'), JSON.stringify(r.report, null, 1));
+  const show = argv.includes('--rows') ? r.report.lines : r.report.lines.filter((l) => !l.startsWith('   h ') || l.endsWith('<<'));
+  console.log(show.join('\n'));
+  console.log(`\n${r.report.pass ? 'FIT OK' : 'FIT: gates not met'}  (${r.triangles} triangles)   full table: ${dir}/fit.txt   overlays: ${dir}/fit_overlay_*.png`);
+  process.exit(r.report.pass ? 0 : 1);
 } else if (cmd === 'build') {
   const file = argv[1];
   if (!file || !existsSync(file)) { console.error('usage: character.mjs build <spec.json> [--ref <dir>] [--out <dir>]'); process.exit(2); }

@@ -36,7 +36,7 @@ export function analyzeImage(img, opts = {}) {
   let dropped = 0;
   if (!opts.raw) {
     dropped = keepLargestComponent(mask, w, h);
-    closeVertical(mask, w, h);
+    if (!opts.noClose) closeVertical(mask, w, h);
     keepLargestComponent(mask, w, h);
   }
 

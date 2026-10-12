@@ -229,6 +229,7 @@ export function makeAnimations(character) {
     clip('run', 0.72, 24, gait(RUN, { stride: stride(false), arm: 0.9, elbow: 1.45, elbowGain: 0.4, sway: 0.012, yaw: 8 * DEG, roll: 3 * DEG, lean: 10 * DEG, stance: 0.36, flight: 0.36 }), { loop: true, measureSpeed: true, flight: 0.05 }),
     // Seated on a bench: thighs horizontal, shins vertical, feet on the floor. Held pose.
     clip('sit', 1, 1, () => ({
+      ground: 'contact', // the soles on the floor whatever the thigh bone's own offset
       root: [hips[0], B('LeftLowerLeg')[1], hips[2]],
       rot: {
         Spine: [-4 * DEG, 0, 0], Head: [3 * DEG, 0, 0],

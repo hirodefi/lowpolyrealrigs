@@ -84,6 +84,91 @@ export async function spans(ref, view = 'front', step = 0.01) {
   return { view, heightPx: Hp, rows };
 }
 
+// ---------------------------------------------------------------------------
+// fit: how closely the built model matches the reference silhouettes, row by row.
+// Both silhouettes are aligned on the feet, the height and a vertical anchor line
+// (front/back: the figure's centre; side: the ankle plumb line, centre of the
+// silhouette at h = 0.10), so the lean, bust, glutes and shin shift of a z-relative
+// body are compared where they are, not where a bounding box would put them.
+
+const BANDS = [['head', 0.83, 1.0], ['neck+shoulders', 0.76, 0.83], ['torso', 0.52, 0.76], ['thighs', 0.33, 0.52], ['shins', 0.09, 0.33], ['feet', 0.0, 0.09]];
+export const GATES = { iou: { front: 0.92, back: 0.92, side: 0.88 }, rowMean: 0.004, rowMax: 0.008 };
+
+function anchorOf(S, view) {
+  if (view !== 'side') return (S.bbox.x0 + S.bbox.x1) / 2;
+  let sum = 0, n = 0;
+  for (let h = 0.09; h <= 0.111; h += 0.005) {
+    const r = S.runs[S.rowAt(1 - h)];
+    if (r?.length) { sum += (r[0][0] + r[r.length - 1][1]) / 2; n++; }
+  }
+  return n ? sum / n : (S.bbox.x0 + S.bbox.x1) / 2;
+}
+function edges(S, anchor, h) {
+  const r = S.runs[S.rowAt(1 - h)];
+  if (!r?.length) return null;
+  const k = S.heightPx;
+  return { L: (r[0][0] - anchor) / k, R: (r[r.length - 1][1] - anchor) / k };
+}
+function alignedIoUAt(a, aa, b, ab) {
+  const N = 420; let inter = 0, uni = 0;
+  for (let j = 0; j < N; j++) for (let i = 0; i < N / 2; i++) {
+    const x = (i / (N / 2) - 0.5) * 0.7, y = j / (N - 1);
+    const p = a.on(aa + x * a.heightPx, a.bbox.y0 + y * (a.heightPx - 1)), q = b.on(ab + x * b.heightPx, b.bbox.y0 + y * (b.heightPx - 1));
+    if (p && q) inter++;
+    if (p || q) uni++;
+  }
+  return uni ? inter / uni : 0;
+}
+function overlayAt(a, aa, b, ab, W = 300, H = 520) {
+  const data = new Uint8ClampedArray(W * H * 4), sa = (H - 20) / a.heightPx, sb = (H - 20) / b.heightPx;
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+    const o = (y * W + x) * 4, p = a.on(aa + (x - W / 2) / sa, a.bbox.y0 + (y - 10) / sa), q = b.on(ab + (x - W / 2) / sb, b.bbox.y0 + (y - 10) / sb);
+    data[o] = p ? 255 : 0; data[o + 1] = q ? 255 : 0; data[o + 2] = q ? 255 : 0; data[o + 3] = 255; // red = reference only, cyan = model only, white = both
+  }
+  return { width: W, height: H, data };
+}
+
+/** Build the spec against the references and report the fit: tables, bands, gates, overlays. */
+export async function fit(spec, ref) {
+  const refs = await loadRefs(ref);
+  if (!refs) throw new Error('fit needs reference views');
+  const r = buildFromSpec(spec, refs);
+  const mod = await renderViews(r.glb, { bg: null, flat: true });
+  const files = {}, report = { views: {}, pass: true, lines: [] };
+  const f3 = (x) => (x >= 0 ? '+' : '') + x.toFixed(3);
+  for (const v of VIEWS) {
+    if (!refs[v]) continue;
+    // noClose: the waist-band gap filling meant for photos would fill the real gaps between torso and arms of a clean reference
+    const A = analyzeImage(refs[v], { noClose: true }), B = analyzeImage(mod[v], { raw: true });
+    const aa = anchorOf(A, v), ab = anchorOf(B, v);
+    const iou = alignedIoUAt(A, aa, B, ab);
+    const rows = [];
+    for (let h = 0.995; h > 0.004; h -= 0.01) {
+      const ea = edges(A, aa, h), eb = edges(B, ab, h);
+      if (!ea || !eb) continue;
+      rows.push({ h, ref: ea, model: eb, dL: eb.L - ea.L, dR: eb.R - ea.R });
+    }
+    const bands = BANDS.map(([name, lo, hi]) => {
+      const rs = rows.filter((q) => q.h >= lo && q.h <= hi);
+      // Feet: the reference's feet are rarely symmetric (one toes out more); a symmetric character is judged on the mean outward
+      // error of the two feet in front/back views, and the feet band has a looser gate (small parts, pose-dependent).
+      const errs = name === 'feet' && v !== 'side' ? rs.map((q) => Math.abs((q.dR - q.dL) / 2)) : rs.flatMap((q) => [Math.abs(q.dL), Math.abs(q.dR)]);
+      return { name, lo, hi, mean: errs.reduce((a, b) => a + b, 0) / (errs.length || 1), max: Math.max(0, ...errs) };
+    });
+    const iouOk = iou >= GATES.iou[v];
+    const bandLim = (b, max) => (b.name === 'feet' ? (max ? 2.5 : 2) : 1.5);
+    const bandsOk = bands.every((b) => b.mean <= GATES.rowMean * bandLim(b) && b.max <= GATES.rowMax * bandLim(b, 1));
+    report.views[v] = { iou: +iou.toFixed(3), iouGate: GATES.iou[v], iouOk, bands, bandsOk };
+    if (!iouOk || !bandsOk) report.pass = false;
+    report.lines.push(`== ${v}: IoU ${iou.toFixed(3)} (gate ${GATES.iou[v]})${iouOk ? '' : '  <<'}`);
+    for (const b of bands) report.lines.push(`   ${b.name.padEnd(15)} h ${b.lo.toFixed(2)}-${b.hi.toFixed(2)}  mean |err| ${b.mean.toFixed(4)}  max ${b.max.toFixed(4)}${b.mean > GATES.rowMean * bandLim(b) || b.max > GATES.rowMax * bandLim(b, 1) ? '  <<' : ''}`);
+    report.lines.push('   rows (h | reference L R | model L R | err L R)  - err = model minus reference, + = model further right; flagged when |err| > ' + GATES.rowMax);
+    for (const q of rows) report.lines.push(`   h ${q.h.toFixed(3)} | ${f3(q.ref.L)} ${f3(q.ref.R)} | ${f3(q.model.L)} ${f3(q.model.R)} | ${f3(q.dL)} ${f3(q.dR)}${Math.abs(q.dL) > GATES.rowMax || Math.abs(q.dR) > GATES.rowMax ? '  <<' : ''}`);
+    files[`fit_overlay_${v}.png`] = Array.from(await toPNG(overlayAt(A, aa, B, ab)));
+  }
+  return { report, files, glb: Array.from(r.glb), triangles: r.budget.total };
+}
+
 /** Build a spec; with ref images the body is measured from them. */
 export async function build(spec, ref) {
   const refs = await loadRefs(ref);
